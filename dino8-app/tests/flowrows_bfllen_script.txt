@@ -1,0 +1,6 @@
+# Flow Register row List Length (Blender Geometry Nodes): player + bake, read back by sections/96_bfllen.sh (see flowrows3_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 4
+SelAll
+List

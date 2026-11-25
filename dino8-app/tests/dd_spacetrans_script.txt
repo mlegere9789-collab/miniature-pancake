@@ -1,0 +1,12 @@
+# SPACETRANS: layout details with page-mm-per-model-unit scales 0.02 (1:50), 0.1 (1:10) and a free-zoom detail.
+Layout Name=DDSheet Width=297 Height=210
+Detail Name=D1 Scale=0.02 20,20 150,120
+Detail Name=D2 Scale=0.1 160,20 280,120
+Detail Name=D3 20,130 100,200
+SpaceTrans Detail=D1 2.5
+SpaceTrans Detail=D2 2.5
+SpaceTrans To=Paper Detail=D1 125
+SpaceTrans To=Paper Detail=D2 25
+SpaceTrans Detail=D3 5
+SpaceTrans Detail=D1 -4
+SpaceTrans Detail=NoSuch 5

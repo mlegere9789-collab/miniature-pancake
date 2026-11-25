@@ -1,0 +1,168 @@
+cmake_minimum_required(VERSION 3.20)
+project(dino8_kernel LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(DINO8_KERNEL_BUILD_TESTS "Build dino8-kernel tests" ON)
+option(DINO8_KERNEL_BUILD_EXAMPLES "Build dino8-kernel example programs" ON)
+
+include(FetchContent)
+
+# Force BUILD_TESTING off before either dependency's CMakeLists.txt runs.
+# Manifold's own CMakeLists calls include(CTest), which defines this as a
+# cache variable defaulting ON; once it's ON, OpenNURBS' own CMakeLists
+# appends opennurbs_plus_testheader.h to its precompiled-header list under
+# `if (BUILD_TESTING)` (CMakeLists.txt:409-411/586-588) - a file that does
+# not exist anywhere in the public OpenNURBS source tree (verified: not a
+# clone problem, grepping the whole fetched tree finds zero files named
+# that), so the PCH generation step fails with a hard "No such file or
+# directory" the moment BUILD_TESTING is ON when opennurbs configures.
+# Forcing it off here, before either FetchContent_MakeAvailable call,
+# means neither dependency ever sees it ON, regardless of which one's
+# CMakeLists happens to set it first on a given configure pass. Our own
+# test target (dino8_kernel_tests, tests/CMakeLists.txt) is unaffected -
+# it's gated by DINO8_KERNEL_BUILD_TESTS + enable_testing()/add_test(),
+# never by this variable.
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+# Pin to a specific OpenNURBS tag rather than tracking a moving branch, so
+# builds are reproducible. Bump this deliberately when the kernel needs a
+# newer OpenNURBS feature.
+#
+# Two defects in that release are patched at configure time (cmake/patches/opennurbs-8.34.26223-thread-safety.patch):
+# ON_Surface::IsSphere reads one double past its allocation (AddressSanitizer heap-buffer-overflow, reached from SAT export
+# and from any caller that classifies a NURBS surface), and ON_NextContentSerialNumber is a non-atomic counter shared by all
+# threads. PATCH_COMMAND runs cmake/ApplyPatch.cmake: idempotent (an already-patched tree is accepted) and a hard configure
+# error when the patch no longer applies, so a version bump cannot silently drop the fixes. The check after
+# FetchContent_MakeAvailable guards the one path PATCH_COMMAND does not cover (FETCHCONTENT_SOURCE_DIR_OPENNURBS pointing at
+# an unpatched checkout).
+FetchContent_Declare(
+  opennurbs
+  GIT_REPOSITORY https://github.com/mcneel/opennurbs.git
+  GIT_TAG        v8.34.26223.11001
+  PATCH_COMMAND  ${CMAKE_COMMAND}
+                   -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/opennurbs-8.34.26223-thread-safety.patch
+                   -DPATCH_NAME=opennurbs-thread-safety
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ApplyPatch.cmake
+)
+FetchContent_MakeAvailable(opennurbs)
+
+file(READ ${opennurbs_SOURCE_DIR}/opennurbs_revsurface.cpp _on_rev)
+file(READ ${opennurbs_SOURCE_DIR}/opennurbs_statics.cpp _on_statics)
+if(NOT _on_rev MATCHES "int j = 0; j < sc1; j\\+\\+" OR _on_rev MATCHES "int j = 0; j <= sc1; j\\+\\+"
+   OR NOT _on_statics MATCHES "std::atomic<ON__UINT64> serial_number")
+  message(FATAL_ERROR "openNURBS in ${opennurbs_SOURCE_DIR} does not carry cmake/patches/opennurbs-8.34.26223-thread-safety.patch "
+                      "(IsSphere span loop bound / atomic content serial number). Remove FETCHCONTENT_SOURCE_DIR_OPENNURBS or apply the patch to it.")
+endif()
+unset(_on_rev)
+unset(_on_statics)
+
+# Manifold provides the real mesh-boolean algorithm OpenNURBS doesn't
+# (see brep.h's comment for why). Scoped down to just the boolean engine:
+# no 2D cross-sections (skips the Clipper2 dependency), no parallel
+# backend (skips TBB), no test suite, no Python bindings, static linkage
+# to match how we link everything else here.
+set(MANIFOLD_CROSS_SECTION OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_PAR OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_TEST OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_PYBIND OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  manifold
+  GIT_REPOSITORY https://github.com/elalish/manifold.git
+  GIT_TAG        v3.5.2
+)
+FetchContent_MakeAvailable(manifold)
+
+# OpenNURBS' CMakeLists always builds a shared library/framework next to
+# the static one we link; skip it to halve the dependency build.
+if(TARGET OpenNURBS)
+  set_target_properties(OpenNURBS PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
+
+add_library(dino8_kernel STATIC
+  src/curve.cpp
+  src/curve_interpolate.cpp
+  src/curve_classify.cpp
+  src/iges.cpp
+  src/acis_sat.cpp
+  src/step_curve.cpp
+  src/surface.cpp
+  src/surface_edit.cpp
+  src/surface_classify.cpp
+  src/brep_seam.cpp
+  src/surface_intersect.cpp
+  src/brep.cpp
+  src/mesh.cpp
+  src/mesh_edit.cpp
+  src/vertex_weights.cpp
+  src/threemf.cpp
+  src/gltf.cpp
+  src/mesh_unwrap.cpp
+  src/deform.cpp
+  src/delaunay.cpp
+  src/boolean.cpp
+  src/boolean_general.cpp
+  src/boolean_diagnostics.cpp
+  src/features.cpp
+  src/rib.cpp
+  src/boss.cpp
+  src/fillet.cpp
+  src/sweep.cpp
+  src/file_io.cpp
+  src/subd.cpp
+  src/convex_hull.cpp
+  src/point_cloud.cpp
+  src/las.cpp
+  src/sheet_metal.cpp
+  src/trimmed_offset.cpp
+  src/offset_solid.cpp
+  src/pattern.cpp
+  src/follow_me.cpp
+  src/split_by_curve.cpp
+  src/planar_curve_boolean.cpp
+  src/tessellation_refine.cpp
+  src/arch_calc.cpp
+  src/struct_calc.cpp
+  src/ifc_writer.cpp
+)
+
+# windows.h (pulled in by opennurbs.h) defines min/max macros that break
+# std::min/std::max in every consumer; NOMINMAX is therefore PUBLIC.
+target_compile_definitions(dino8_kernel PUBLIC
+  $<$<PLATFORM_ID:Windows>:NOMINMAX>
+  $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
+)
+target_include_directories(dino8_kernel
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# OpenNURBS' own CMakeLists creates a link-order problem for static
+# consumers: its zlib target needs zcalloc/zcfree, which are only defined
+# inside opennurbsStatic itself (opennurbs_zlib_memory.cpp), but
+# opennurbsStatic is linked *before* zlib in its own target_link_libraries
+# call. A plain linker pass never revisits an earlier archive, so the
+# symbols go unresolved. Wrapping both in a linker group lets ld rescan
+# until everything resolves, without patching the vendored CMakeLists.
+# --start-group is a GNU ld feature; Apple's ld64 and MSVC's link.exe
+# already rescan archives, so they get the plain list.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT MSVC AND NOT WIN32)
+  target_link_libraries(dino8_kernel PUBLIC
+    "-Wl,--start-group" opennurbsStatic zlib "-Wl,--end-group"
+    manifold
+  )
+else()
+  target_link_libraries(dino8_kernel PUBLIC opennurbsStatic zlib manifold)
+endif()
+
+if(DINO8_KERNEL_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
+if(DINO8_KERNEL_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif()

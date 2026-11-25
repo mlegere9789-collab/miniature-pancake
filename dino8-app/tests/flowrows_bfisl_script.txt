@@ -1,0 +1,6 @@
+# Flow Register row Mesh Island (Blender Geometry Nodes): player + bake, read back by sections/98_bfisl.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 12
+SelAll
+List

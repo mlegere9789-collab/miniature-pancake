@@ -1,0 +1,12 @@
+{
+  "id": "{{cookiecutter.plugin_slug}}",
+  "name": "{{cookiecutter.plugin_name}}",
+  "version": "{{cookiecutter.version}}",
+  "description": "{{cookiecutter.description}}",
+  "author": "{{cookiecutter.author}}",
+  "tags": [{{cookiecutter.index_tags}}],
+  "api_version": 2,
+  "min_app_version": "0.1.0",
+  "download_url": "https://example.invalid/REPLACE-ME/{{cookiecutter.plugin_slug}}.so",
+  "sha256": "REPLACE-WITH-package_plugin.py-OUTPUT"
+}

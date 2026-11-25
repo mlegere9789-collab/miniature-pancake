@@ -1,0 +1,25 @@
+# CurvatureAnalysis prints the MEASURED median curvature (not only the percentile colour range).
+# Closed forms: sphere radius r  K = 1/r^2, H = 1/r;   cylinder radius r  K = 0, H = 1/(2r).
+# Order matters: the section (89_curvmeasure.sh, CRVM_) reads the six reports back in this order.
+SetActiveViewport Top
+Sphere 0,0,0 10
+SelLast
+CurvatureAnalysis Style=Gaussian
+SelLast
+CurvatureAnalysis Style=Mean
+SelAll
+Delete
+Sphere 0,0,0 5
+SelLast
+CurvatureAnalysis Style=Gaussian
+SelLast
+CurvatureAnalysis Style=Mean
+SelAll
+Delete
+Cylinder 0,0,0 5 20
+SelLast
+CurvatureAnalysis Style=Gaussian
+SelLast
+CurvatureAnalysis Style=Mean
+SelAll
+Delete

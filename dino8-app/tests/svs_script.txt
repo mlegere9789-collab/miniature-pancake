@@ -1,0 +1,76 @@
+# Reflect keeps a pinned SubD corner on BOTH halves (the "SVS_" section, tests/sections/78_svs.sh).
+#
+# Reflect mirrors a SubD through kernel::SubD::Symmetrize, which re-created the mirrored faces with Unset tags: the mirror image of a
+# pinned corner (SubDCorner) came back an ordinary Crease vertex, and on the rebuild path (a face lying in the mirror plane) the
+# original pin was lost too. Fixture: the SubD box 0,0,0 - 10,10,0 - 10 with the two edges at the origin creased and the origin pinned.
+# Hand-derived limit points (Catmull-Clark crease rule (a + 4 v + b) / 6 for a Crease vertex, control point for a Corner):
+#   source origin, pinned:                      (0, 0, 0)
+#   mirrored across x = 15, image (30, 0, 0):   Corner -> (30, 0, 0)        (an unpinned image would read (28.3333, 1.6667, 0))
+#   mirrored across x = 10 (the far face lies in the plane and is dropped), image (20, 0, 0): Corner -> (20, 0, 0)
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# mirror plane x = 15 (does not touch the cube): two bodies in one SubD
+New
+SVSBEGIN_apart
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SubDCorner
+0,0,0
+Enter
+SelAll
+Reflect
+15,0,0
+15,10,0
+SelLast
+SubDVertexInfo
+0,0,0
+30,0,0
+Enter
+
+# mirror plane x = 10 (contains the far face): the result is rebuilt face by face
+New
+SVSBEGIN_inplane
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SubDCorner
+0,0,0
+Enter
+SelAll
+Reflect
+10,0,0
+10,10,0
+SelLast
+SubDVertexInfo
+0,0,0
+20,0,0
+Enter
+
+# control: the same mirror WITHOUT the pin gives ordinary Crease vertices with the crease-rule limit point
+New
+SVSBEGIN_unpinned
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelAll
+Reflect
+15,0,0
+15,10,0
+SelLast
+SubDVertexInfo
+30,0,0
+Enter

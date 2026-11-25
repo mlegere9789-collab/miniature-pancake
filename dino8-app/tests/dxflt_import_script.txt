@@ -1,0 +1,15 @@
+# DXF linetypes, read side (the "DXLT_" section, tests/sections/93_dxlt.sh). The importer ignored LTYPE tables and group 6 entirely, so every
+# imported line was Continuous. lt_fixture.dxf is hand-built by dxf_check.py (AutoCAD-style, independent of the exporter): LTYPE HIDDEN
+# 6.35,-3.175, CENTER 31.75,-6.35,6.35,-6.35, DOT 0,-6.35 (a dot) and a complex GAS_LINE (group 74 = 2, not imported); layer Cut uses HIDDEN,
+# layer Plain CONTINUOUS; six horizontal lines at y = 0 ... 50 (see dxf_check.py's svg mode for which linetype each must print with).
+# Linetype display is switched off so Print writes the real dash pattern as a stroke-dasharray instead of pre-splitting the curve
+# (dash_export_script.txt explains why). Printed at Scale=1 the dasharray values are the pattern lengths themselves.
+SetActiveViewport Top
+New
+LinetypeDisplay Enable=No
+Import @TMP@/lt_fixture.dxf
+Linetypes
+Top
+Print @TMP@/lt_import.svg Scale=1
+SelAll
+Export @TMP@/lt_reexport.dxf

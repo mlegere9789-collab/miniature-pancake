@@ -1,0 +1,17 @@
+# DIMARC: a 90 degree arc of radius 10 about the origin (counterclockwise from (10,0) to (0,10)), dimensioned with its line through (9.899495,9.899495) (radius 14),
+# then (new document) the part of the same arc between the points at 0 and 45 degrees.
+Arc 0,0,0 10,0,0 0,10,0
+SelLast
+DimArc
+9.899495,9.899495,0
+SelAll
+GetUserText
+New
+Arc 0,0,0 10,0,0 0,10,0
+SelLast
+DimArc Partial=Yes
+10,0,0
+7.0710678,7.0710678,0
+9.899495,9.899495,0
+SelAll
+GetUserText

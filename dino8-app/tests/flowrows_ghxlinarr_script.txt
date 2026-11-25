@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0015 (Linear Array): player + bake, read back by sections/104_ghxlinarr.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 64
+SelAll
+List

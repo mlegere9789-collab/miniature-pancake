@@ -1,0 +1,75 @@
+# SW2R: Sweep2 between two CLOSED polygon rails (square rings) through the app command, which hands a single section to
+# Brep::Sweep2. Every case starts from New and is bracketed by an unknown-command marker (SW2RBEGIN_<name>).
+SetActiveViewport Top
+New
+SW2RBEGIN_flat
+Polyline -5,-5,0 5,-5,0 5,5,0 -5,5,0 -5,-5,0
+Enter
+Polyline -8,-8,0 8,-8,0 8,8,0 -8,8,0 -8,-8,0
+Enter
+Line -5,-5,0 -8,-8,0
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+Enter
+SelLast
+Area
+SelLast
+What
+New
+SW2RBEGIN_lift
+Polyline -5,-5,0 5,-5,0 5,5,0 -5,5,0 -5,-5,0
+Enter
+Polyline -8,-8,2 8,-8,2 8,8,2 -8,8,2 -8,-8,2
+Enter
+Line -5,-5,0 -8,-8,2
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+Enter
+SelLast
+Area
+SelLast
+What
+New
+SW2RBEGIN_mid_flat
+Polyline 0,-5,0 5,-5,0 5,5,0 -5,5,0 -5,-5,0 0,-5,0
+Enter
+Polyline 0,-8,0 8,-8,0 8,8,0 -8,8,0 -8,-8,0 0,-8,0
+Enter
+Line 0,-5,0 0,-8,0
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+Enter
+SelLast
+Area
+SelLast
+What
+New
+SW2RBEGIN_mid_lift
+Polyline 0,-5,0 5,-5,0 5,5,0 -5,5,0 -5,-5,0 0,-5,0
+Enter
+Polyline 0,-8,2 8,-8,2 8,8,2 -8,8,2 -8,-8,2 0,-8,2
+Enter
+Line 0,-5,0 0,-8,2
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+Enter
+SelLast
+Area
+SelLast
+What

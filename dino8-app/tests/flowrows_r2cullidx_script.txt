@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-SETS-0008 (Cull Index): player + bake, read back by sections/95_r2cullidx.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 26
+SelAll
+List

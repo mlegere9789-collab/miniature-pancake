@@ -1,0 +1,38 @@
+# MSHW_: STL / PLY import welds coincident vertices (see tests/sections/58_mshw.sh). smoke.sh substitutes @HERE@ and
+# @TMP@. Every case is cut at its own MSHWB_<name> marker, which sits BEFORE the Import so that the import's own messages
+# belong to the case.
+SetActiveViewport Top
+New
+MSHWB_ply_split
+Import @HERE@/mshw_cube_split.ply
+SelAll
+List
+Cancel
+Volume
+Cancel
+Area
+Cancel
+New
+MSHWB_ply_normals
+Import @HERE@/mshw_cube_split_normals.ply
+SelAll
+List
+Cancel
+New
+MSHWB_ply_gap
+Import @HERE@/mshw_cube_gap.ply
+SelAll
+List
+Cancel
+New
+MSHWB_stl_split
+Import @HERE@/mshw_cube.stl
+SelAll
+List
+Cancel
+Volume
+Cancel
+Area
+Cancel
+New
+MSHWB_end

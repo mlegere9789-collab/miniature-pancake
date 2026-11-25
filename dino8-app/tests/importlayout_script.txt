@@ -1,0 +1,32 @@
+# ImportLayout regression (cmd_viewtools.cpp): a source document builds a
+# layout with one detail that hides a specific, tagged object (HideInDetail)
+# and leaves a second, differently-tagged object shown, saves to a real
+# .3dm, then a *fresh* document (New) imports that file back with
+# ImportLayout. DetailHiddenSelfTest then checks the imported detail's real
+# LayoutDetail::hidden_objects list directly (by each object's
+# "Dino8.ImportLayoutTag" user text, which survives both the geometry
+# import and the hidden-object id remap) rather than a rendered-pixel proxy
+# or just checking the detail/camera exists.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box 0,0,0 10,10,0 10
+SelLast
+SetUserText
+Dino8.ImportLayoutTag
+SrcHidden
+Layout Name=Sheet1 Width=297 Height=210
+Detail Name=Det1 20,20 150,120
+SelDetail Det1
+SelLast
+HideInDetail
+Box 20,0,0 30,10,0 10
+SelLast
+SetUserText
+Dino8.ImportLayoutTag
+SrcVisible
+DetailHiddenSelfTest Sheet1 Det1 SrcHidden SrcVisible
+Save @TMP@/importlayout_src.3dm
+New
+ImportLayout @TMP@/importlayout_src.3dm
+Layouts
+DetailHiddenSelfTest Sheet1 Det1 SrcHidden SrcVisible
+@expect_objects 2

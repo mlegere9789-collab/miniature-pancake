@@ -1,0 +1,26 @@
+# TCOUNT (AutoCAD Express Tools): number texts. smoke.sh-style sections substitute @TMP@ with a scratch directory.
+Text AA 40,0,0
+Text BB 10,5,0
+Text CC 30,10,0
+Text DD 0,15,0
+Text EE 20,20,0
+SelAll
+TCount Start=1 Increment=1 Order=X Prefix=P- Mode=Overwrite
+SelAll
+Export @TMP@/dd_tc1.dxf
+# second pass: a sixth text that has no "P-" in it
+Text Z9 50,25,0
+SelLast
+SetObjectName DD_Z9
+SelAll
+TCount Start=100 Increment=10 Order=Y Mode=Replace Find=P-
+SelAll
+Export @TMP@/dd_tc2.dxf
+# third pass: Prefix mode on Z9 alone, Suffix mode on a new text
+SelName DD_Z9
+TCount Start=7 Mode=Prefix Prefix=N-
+Text Q 60,30,0
+SelLast
+TCount Start=3 Mode=Suffix Suffix=.
+SelAll
+Export @TMP@/dd_tc3.dxf

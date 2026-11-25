@@ -1,0 +1,170 @@
+# ARCSH: exact open / variable-thickness Shell of a sphere bowl, dome or large cap (a ball cut by a plane: one flat face plus one
+# spherical face) through kernel::ShellRevolvedArcProfile. These solids used to fall to the mesh construction. Every case is
+# bracketed by an ARCSHBEGIN_<name> marker; arcshblock in sections/73_arcsh.sh slices the output by it.
+# The caps are Sphere ∩ Box (the Box base sits on the construction plane, z = 0, and rises 10), a 2-face exact B-rep each.
+# ===================== hemisphere bowl: sphere r5 at the origin, flat top removed, wall 1 =====================
+New
+ARCSHBEGIN_bowl
+Sphere 0,0,0 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+2,0,0
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== dome: sphere r5 centred at z=-2 (cap height 3), flat base removed, wall 1 =====================
+New
+ARCSHBEGIN_dome
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+1,0,0
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== dome with the spherical wall at its own thickness 0.5 =====================
+New
+ARCSHBEGIN_domevary
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+1,0,0
+Mode=Thickness
+0,0,3
+0.5
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== large cap (more than a hemisphere): sphere r5 centred at z=2, base removed, wall 1 =====================
+New
+ARCSHBEGIN_bigcap
+Sphere 0,0,2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+1,0,0
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== the spherical face removed instead: what is left is the base slab under the sphere =====================
+New
+ARCSHBEGIN_curvedgone
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+0,0,3
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== negative: a per-face thickness with nothing removed (a closed hollow is two lumps) =====================
+New
+ARCSHBEGIN_closed
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+Mode=Thickness
+0,0,3
+0.5
+Enter
+1
+SelAll
+List
+# ===================== OffsetSrf (Solid=No) of the dome, grown by 1: an exact whole-body offset =====================
+New
+ARCSHBEGIN_offdome
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# ===================== OffsetSrf of the dome shrunk by 0.5 =====================
+New
+ARCSHBEGIN_offdomein
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+-0.5
+SelLast
+List
+Volume
+Check
+# ===================== negative: shrinking the dome by its own radius =====================
+New
+ARCSHBEGIN_offcollapse
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+-5
+SelLast
+List

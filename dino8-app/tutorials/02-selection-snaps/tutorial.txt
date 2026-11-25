@@ -1,0 +1,53 @@
+#title: Selection and snaps
+#summary: Pick objects with the mouse, window and crossing selections, selection commands, and object snaps that lock clicks onto exact points.
+#level: Beginner
+#narrate: This tutorial is about two things: choosing objects, and clicking exactly where you mean. First, a small scene to work with.
+SetActiveViewport Top
+MaxViewport
+Box 0,0,0 10,10,0 5
+Box 20,0,0 30,10,0 5
+Circle 15,25,0 4
+Line 0,40,0 30,40,0
+@expect_objects 4
+ZoomExtents
+#narrate: Two boxes, a circle and a line. Nothing is selected yet.
+SelNone
+@clickworld Top 10 5 0
+@wait 3
+@expect_selected 1
+#shot
+#narrate: Clicking an object in a viewport selects it. The click landed on the edge of the first box, and the Properties panel now describes the selection.
+SelNone
+SelWindow -1,-1,0 31,11,0
+@expect_selected 2
+#narrate: A window selection takes only the objects completely inside the rectangle. Both boxes qualify, the circle and line do not.
+SelNone
+SelCrossing -1,20,0 31,45,0
+@expect_selected 2
+#narrate: A crossing selection takes everything the rectangle touches. This one reaches the circle and the line.
+SelNone
+SelCrv
+@expect_selected 2
+#narrate: Commands can select by type. SelCrv picks every curve in the document, so the circle and the line.
+Invert
+@expect_selected 2
+#narrate: Invert flips the selection, leaving the two boxes selected instead.
+SelNone
+@snap end 1
+@snap mid 1
+@snap cen 1
+#narrate: Now snaps. End, Mid and Cen are on. Watch the Osnap bar: a click near an endpoint, midpoint or centre jumps to that exact point.
+Line
+@wait 2
+@clickworld Top 0.4 40.3 0
+@wait 2
+@clickworld Top 15 25.5 0
+@wait 2
+@key Enter
+@wait 2
+@expect_objects 5
+#narrate: We clicked slightly off the line's left end and slightly off the circle's centre. The new line starts and ends exactly on them.
+SelLast
+Length
+#narrate: Length confirms it. A line from 0,40 to 15,25 is exactly twenty-one point two one units, with no rounding from where the mouse happened to be.
+#narrate: Selection chooses what a command acts on, and snaps choose where. Together they cover most everyday modelling.

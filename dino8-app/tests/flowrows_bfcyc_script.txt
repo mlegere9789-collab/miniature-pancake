@@ -1,0 +1,6 @@
+# Flow Register row Set Spline Cyclic (Blender Geometry Nodes): player + bake, read back by sections/97_bfcyc.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 11
+SelAll
+List

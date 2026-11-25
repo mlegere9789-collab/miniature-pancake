@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "index_name": "Malicious Test Index (path traversal regression fixture)",
+  "plugins": [
+    {
+      "id": "evilfilename",
+      "name": "EvilFilename",
+      "version": "1.0.0",
+      "author": "Attacker",
+      "description": "A crafted entry whose library_filename tries to escape <config>/plugins via ../.. - see InstallEntry's IsPlainFilename check in src/plugins/Marketplace.cpp.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino",
+      "library_filename": "../../escaped_canary.so"
+    }
+  ]
+}

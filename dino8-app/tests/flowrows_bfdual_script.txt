@@ -1,0 +1,6 @@
+# Flow Register row Dual Mesh (Blender Geometry Nodes): player + bake, read back by sections/97_bfdual.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 25
+SelAll
+List

@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-CURVE-0020 (Curve Length): player + bake, read back by sections/97_glen.sh (see flowgeo_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 9
+SelAll
+List

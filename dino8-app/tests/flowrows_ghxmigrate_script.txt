@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0008, D8-GH-XFORM-0015, D8-GH-XFORM-0017 (Rotate, Linear Array, Polar Array, Arc: migration of dflow1 files): player + bake, read back by sections/104_ghxmigrate.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 84
+SelAll
+List

@@ -1,0 +1,32 @@
+# Sheet-metal feature command QC (Bend - cmd_sheetmetal.cpp,
+# dino8::kernel::Bend() sheet_metal.h/.cpp). Bounding box is verified
+# against a hand-derived geometry formula, not just an object count - see
+# Bend()'s own doc comment (sheet_metal.h) for the tangent-point/leg-
+# direction convention this bbox is derived from.
+#
+# --- Bend: pivot at the origin, leg1=leg2=0.05, width=0.1, thickness=
+# 0.002, inside_radius=0.003, angle=90 degrees. At angle 0, leg 1 runs
+# from the OUTER tangent point (r_out, 0, 0), r_out = inside_radius +
+# thickness = 0.005, away along -Y for leg1_length - so leg 1's own far
+# end sits at (0.005, -0.05, 0) and the whole leg stays at x = 0.005
+# throughout. At angle 90, leg 2's own outer tangent point is
+# (0, 0.005, 0) and it runs away along -X for leg2_length, so leg 2's own
+# far end sits at (-0.05, 0.005, 0) and the whole leg stays at y = 0.005
+# throughout. The bend's own extrude direction is +Z by `width`. So the
+# exact bbox is x in [-0.05, 0.005], y in [-0.05, 0.005], z in [0, 0.1] -
+# confirmed directly against dino8_scratch_test / a manual smoke run
+# before this fixture was written, not merely derived on paper.
+SheetMetalBend
+0,0,0
+0.05
+0.05
+0.1
+0.002
+0.003
+90
+SelLast
+List
+BoundingBox
+SelAll
+List
+@expect_objects 2

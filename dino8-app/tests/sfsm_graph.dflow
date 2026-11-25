@@ -1,0 +1,13 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Sphere","x":0,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Point","x":0,"y":0,"z":0}},
+  {"has":true,"value":{"kind":"Number","num":5}}
+]},
+{"id":2,"type":"Bake","x":200,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Text","text":"Default"}},
+  {"has":true,"value":{"kind":"Text","text":"FlowSphere"}}
+]}
+],"wires":[
+{"from":1,"fp":0,"to":2,"tp":0}
+]}

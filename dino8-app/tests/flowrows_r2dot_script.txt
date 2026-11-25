@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0009 (Dot Product): player + bake, read back by sections/95_r2dot.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 6
+SelAll
+List

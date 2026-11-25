@@ -1,0 +1,35 @@
+Local fixes to openNURBS v8.34.26223.11001, applied at configure time by dino8-kernel/CMakeLists.txt (cmake/ApplyPatch.cmake).
+
+1. ON_Surface::IsSphere (opennurbs_revsurface.cpp): the span loop ran j <= sc1 and read t[sc1+1], one double past the
+   onmalloc block of sc0+sc1+2 doubles (a heap-buffer-overflow, found by AddressSanitizer; the sibling IsCylinder, IsCone
+   and IsTorus use j < sc1). Reached from SAT export (acis_sat.cpp) for every NURBS surface that passes the arc checks.
+2. ON_NextContentSerialNumber (opennurbs_statics.cpp): plain static counter used by every SubD operation, a data race
+   when two kernel calls run on different threads; made std::atomic (<atomic> comes in through opennurbs_system.h).
+
+--- a/opennurbs_revsurface.cpp
++++ b/opennurbs_revsurface.cpp
+@@ -1772,7 +1772,7 @@
+     for ( int ii = i?1:0; ii <= 4; ii++ )
+     {
+       u = 0.25*((4-ii)*s[i] + ii*s[i+1]);
+-      for ( int j = 0; j <= sc1; j++ )
++      for ( int j = 0; j < sc1; j++ )
+       {
+         for ( int jj = j?1:0; jj <= 4; jj++ )
+         {
+--- a/opennurbs_statics.cpp
++++ b/opennurbs_statics.cpp
+@@ -95,10 +95,9 @@
+ 
+ ON__UINT64 ON_NextContentSerialNumber()
+ {
+-  static ON__UINT64 serial_number = 0;
+-  // If it's ever an issue with multiple threads, 
+-  // this value can be made atomic, but that will slow down performance.
+-  return (0 != ++serial_number) ? serial_number : ++serial_number;
++  static std::atomic<ON__UINT64> serial_number(0);
++  const ON__UINT64 sn = ++serial_number;
++  return (0 != sn) ? sn : ++serial_number;
+ }
+ 
+ // All opennurbs static members are initialized here so that initialization happens in a predictable order.

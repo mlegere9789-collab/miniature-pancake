@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "index_name": "Dino 8 Reference Plugin Index",
+  "updated": "2026-09-28",
+  "plugins": [
+    {
+      "id": "hellodino",
+      "name": "HelloDino",
+      "version": "1.0.0",
+      "description": "The minimum viable plug-in: one command (prints a greeting and drops a point at the origin) and one Dino Flow node. Start here if you are writing your first plug-in.",
+      "author": "Dino 8 Project",
+      "homepage": "https://github.com/",
+      "tags": ["sample", "starter"],
+      "api_version": 2,
+      "min_app_version": "0.1.0",
+      "bundled_path": "plugins/hello_dino"
+    },
+    {
+      "id": "meshtools",
+      "name": "MeshTools",
+      "version": "1.0.0",
+      "description": "Procedural mesh generation: a TerrainMesh command that builds a full heightfield grid via add_mesh(), paired with a Dino Flow node that samples the same height function.",
+      "author": "Dino 8 Project",
+      "homepage": "https://github.com/",
+      "tags": ["sample", "mesh"],
+      "api_version": 2,
+      "min_app_version": "0.1.0",
+      "bundled_path": "plugins/mesh_tools"
+    },
+    {
+      "id": "curvetools",
+      "name": "CurveTools",
+      "version": "1.0.0",
+      "description": "A parametric curve generator: a helix command via add_polyline(), paired with a Dino Flow node returning a point on the same helix at parameter T.",
+      "author": "Dino 8 Project",
+      "homepage": "https://github.com/",
+      "tags": ["sample", "curve"],
+      "api_version": 2,
+      "min_app_version": "0.1.0",
+      "bundled_path": "plugins/curve_tools"
+    },
+    {
+      "id": "analysistools",
+      "name": "AnalysisTools",
+      "version": "1.0.0",
+      "description": "Multi-object, read-and-write command I/O: reads the selection and each object's bounding box, prints a report, and writes results back as user text - plus a generative Fibonacci-sphere point-distribution Dino Flow node.",
+      "author": "Dino 8 Project",
+      "homepage": "https://github.com/",
+      "tags": ["sample", "analysis"],
+      "api_version": 2,
+      "min_app_version": "0.1.0",
+      "bundled_path": "plugins/analysis_tools"
+    }
+  ]
+}

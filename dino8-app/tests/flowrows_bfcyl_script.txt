@@ -1,0 +1,6 @@
+# Flow Register row Cylinder (Blender Geometry Nodes): player + bake, read back by sections/96_bfcyl.sh (see flowrows3_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 25
+SelAll
+List

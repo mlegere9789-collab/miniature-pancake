@@ -1,0 +1,120 @@
+# Provenance-based selection: SelChildren/SelParents/SelExtrusion
+# (cmd_select2.cpp), backed by the real parent/child ProvenanceInfo side
+# table (doc/Document.h) two producers populate:
+#  - InstantiateBlockInDocument/InstantiateDynamicBlock (doc/BlockInstances.h
+#    / cmd_drafting.cpp): every object placed for a block instance except
+#    the first ("the anchor") gets parent_id = the anchor's ObjectId.
+#  - ExtrudeCommand (cmd_solids.cpp): the solid/surface an ExtrudeCrv builds
+#    gets parent_id = the profile curve it was built from.
+# Object ids below are the deterministic 1-based counter Document::Add
+# assigns, in creation order, and are never reused after Delete/Remove - see
+# smoke.sh's ids-are-deterministic comment on other *_script.txt files for
+# the same assumption.
+
+# --- Block: two curves become a 2-object "Widget" definition, replaced in
+# place by an instance at the same base point (ids 1,2 removed; ids 3,4 are
+# the new instance - 3 is the anchor, 4's provenance parent is 3).
+Line 0,0,0 1,0,0
+Line 1,0,0 1,1,0
+SelID 1 2
+Block
+0,0,0
+Widget
+@expect_objects 2
+
+# --- Two more placed instances (ids 5,6 and 7,8) - each instance's own
+# anchor/member pair, independent of the other instances.
+Insert
+Widget
+100,0,0
+Enter
+@expect_objects 4
+Insert
+Widget
+200,0,0
+Enter
+@expect_objects 6
+
+# SelChildren from instance #2's anchor (5) selects exactly its own member
+# (6) - not instance #1's (3,4) or instance #3's (7,8).
+SelNone
+SelID 5
+SelChildren
+@expect_selected 2
+List
+
+# SelParents from instance #2's member (6) selects exactly its own anchor (5).
+SelNone
+SelID 6
+SelParents
+@expect_selected 2
+
+# Same pair, instance #1 (3 anchor / 4 member), confirms this isn't special-
+# cased to whichever instance was inserted last.
+SelNone
+SelID 3
+SelChildren
+@expect_selected 2
+SelNone
+SelID 4
+SelParents
+@expect_selected 2
+
+# An anchor has no recorded parent of its own - SelParents on it adds
+# nothing (only the anchor itself stays selected), reported rather than
+# silently matching everything the way the old group-symmetric fallback did.
+SelNone
+SelID 3
+SelParents
+@expect_selected 1
+
+# A member has no children of its own - SelChildren on it adds nothing.
+SelNone
+SelID 6
+SelChildren
+@expect_selected 1
+
+# --- ExtrudeCrv: a decoy Brep (Box, id 9) that was never built by an
+# extrusion command must never be picked up by SelExtrusion - the whole
+# point of tracking real provenance instead of "every polysurface" (the
+# command's old Partial help text).
+Box 500,0,0 510,10,0 10
+@expect_objects 7
+SelNone
+Circle 300,0,0 5
+@expect_objects 8
+SelNone
+SelID 10
+ExtrudeCrv
+5
+@expect_objects 9
+
+# SelExtrusion finds exactly the real extrusion (11), not the decoy Box (9).
+SelNone
+SelExtrusion
+@expect_selected 1
+List
+
+# SelParents on the extrusion finds its source curve (10) while it still exists.
+SelNone
+SelID 11
+SelParents
+@expect_selected 2
+List
+
+# Delete the source curve, then confirm SelParents degrades gracefully to
+# "nothing found" instead of crashing or resolving a dangling id.
+SelNone
+SelID 10
+Delete
+@expect_objects 8
+SelNone
+SelID 11
+SelParents
+@expect_selected 1
+
+# The extrusion itself is still found by SelExtrusion (provenance *kind*
+# survives its parent being deleted - only the parent_id lookup goes stale).
+SelNone
+SelExtrusion
+@expect_selected 1

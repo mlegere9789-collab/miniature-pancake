@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-MATHS-0014 (Absolute): player + bake, read back by sections/95_r2abs.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 5
+SelAll
+List

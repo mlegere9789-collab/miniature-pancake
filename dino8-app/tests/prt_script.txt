@@ -1,0 +1,20 @@
+# Print to SVG / PDF at forced scales and fit-to-page (the "PRT_" section, tests/sections/91_prt.sh). A 10 x 10 square (lower-left at the
+# origin) and a circle of radius 10 centred at (30, 0) in a millimetre document, viewed from Top: extents x 0..40, y -10..10.
+#   Scale=1   : page millimetres per unit 1  -> 40 x 20 mm on the default A4 landscape page (297 x 210)
+#   Scale=0.5 : the 1:2 print -> the square prints 5 x 5 mm
+#   (no Scale): fit to the page inside the 10 mm margin -> scale min(277 / 40, 190 / 20) = 6.925
+#   Scale=10  : 400 x 200 mm does not fit A4, so the page grows to 420 x 220 mm (margin kept) instead of clipping
+# smoke.sh checks each SVG / PDF pair with print_check.py (xml.etree + a PDF content-stream scan + pdfinfo) against closed forms.
+SetActiveViewport Top
+New
+Rectangle 0,0,0 10,10,0
+Circle 30,0,0 10
+Top
+Print @TMP@/prt_s1.svg Scale=1
+Print @TMP@/prt_s1.pdf Scale=1
+Print @TMP@/prt_half.svg Scale=0.5
+Print @TMP@/prt_half.pdf Scale=0.5
+Print @TMP@/prt_fit.svg
+Print @TMP@/prt_fit.pdf
+Print @TMP@/prt_big.svg Scale=10
+Print @TMP@/prt_big.pdf Scale=10

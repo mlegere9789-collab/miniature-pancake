@@ -1,0 +1,19 @@
+# Real STEP AP214 assembly structure (MAPPED_ITEM/REPRESENTATION_MAP) read
+# support - see FileIgesStep.cpp's ResolveMappedItem for the construction.
+# step_assembly_fixture.stp places the exact same "Bracket" square-face
+# component three times: once at identity, once translated, once
+# translated AND rotated 90 degrees about Z - proving the reader applies
+# each instance's own real transform rather than reading every instance at
+# its raw local-frame coordinates (which would put all three at the same
+# place).
+Open @TMP@/step_assembly_fixture.stp
+@expect_objects 3
+SelNone
+SelID 1
+BoundingBox
+SelNone
+SelID 2
+BoundingBox
+SelNone
+SelID 3
+BoundingBox

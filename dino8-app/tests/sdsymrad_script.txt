@@ -1,0 +1,139 @@
+# SubD live RADIAL symmetric editing (the "SDSR_" section, tests/sections/87_sdsymrad.sh): SubDSymmetryCheck / SubDMoveSymmetric /
+# SubDCreaseSymmetric with Mode=Radial, Count=N (kernel SubD::CheckRadialSymmetry / MoveVertexRadial / SetCreaseRadial).
+#
+# Fixture: the app's SubD box -1,-1,0 - 1,1,0 - 2, i.e. the 8-vertex cage [-1,1] x [-1,1] x [0,2], 4-fold (and 2-fold, not 3-fold) symmetric about
+# the z axis (axis picks (0,0,0) and (0,0,1): through the origin, direction +z).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# --- the box is 4-fold and 2-fold symmetric, not 3-fold
+New
+SDSBEGIN_check
+SubDBox -1,-1,0 1,1,0 2
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=2
+0,0,0
+0,0,1
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=3
+0,0,0
+0,0,1
+
+# --- a radial move: the corner (1,1,2) goes to (1.2,0.9,2.5) and its three 90-degree images follow; the limit points at the corner and at its
+# 90-degree image (-0.9,1.2,2.5) are rotated images of each other
+New
+SDSBEGIN_move
+SubDBox -1,-1,0 1,1,0 2
+SelLast
+SubDMoveSymmetric
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+1,1,2
+1.2,0.9,2.5
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+SubDVertexInfo
+1.2,0.9,2.5
+-0.9,1.2,2.5
+Enter
+
+# --- negative control: the same move done to ONE corner only (SubDSculpt with a radius below the edge length) breaks the symmetry (2 unpaired),
+# and the radial move refuses the corner that has no images
+New
+SDSBEGIN_onesided
+SubDBox -1,-1,0 1,1,0 2
+SelLast
+SubDSculpt
+Radius=0.5
+Falloff=Constant
+1,1,2
+1.2,0.9,2.5
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+SubDMoveSymmetric
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+1.2,0.9,2.5
+2,2,2
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+
+# --- creases: one radial crease makes the four vertical edges, a one-sided crease on a top edge breaks the symmetry (2 mismatches), the radial
+# call repairs it (all four top edges)
+New
+SDSBEGIN_crease
+SubDBox -1,-1,0 1,1,0 2
+SelLast
+SubDCreaseSymmetric
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+1,1,1
+Enter
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+What
+SelLast
+Crease
+0,1,2
+Enter
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+SubDCreaseSymmetric
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+0,1,2
+Enter
+SelLast
+SubDSymmetryCheck
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelLast
+What
+
+New
+SDSBEGIN_end

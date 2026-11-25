@@ -1,0 +1,28 @@
+# DraftAngleAnalysis median draft angle of a cone / cylinder wall (section 89_draftcone.sh, DCN_).
+# A cone of base radius R and height H has a wall tilted atan(R/H) from its axis, so with the pull along the axis every wall normal
+# makes draft = +-atan(R/H) (the sign says which way the apex points); a cylinder wall is parallel to the axis: draft 0.
+# The wall carries most display vertices (the base cap is one flat face and the apex a single point), so the MEDIAN is the wall's draft.
+# Order matters: the section reads the five reports back in this order.
+SetActiveViewport Top
+Cone 0,0,0 10 10
+SelLast
+DraftAngleAnalysis Direction=World
+SelLast
+DraftAngleAnalysis Direction=-Z
+SelAll
+Delete
+Cone 0,0,0 5 10
+SelLast
+DraftAngleAnalysis Direction=World
+SelAll
+Delete
+Cone 0,0,0 10 5
+SelLast
+DraftAngleAnalysis Direction=World
+SelAll
+Delete
+Cylinder 0,0,0 5 20
+SelLast
+DraftAngleAnalysis Direction=World
+SelAll
+Delete

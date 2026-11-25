@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""STX_ checker: the STEP (ISO 10303-21) files written by the STX_ section of smoke.sh, read by a small independent parser
+(entity table from the text, no use of the application's importer) and checked against what the solids must be:
+
+  * exactly one MANIFOLD_SOLID_BREP over one CLOSED_SHELL, with the closed form's face count (box minus a piercing cylinder: 6 planar
+    faces + 1 cylindrical = 7; a plain cylinder: 2 planar caps + 1 cylindrical wall = 3);
+  * a closed shell: every EDGE_CURVE is used by exactly two ORIENTED_EDGEs;
+  * the faces that must carry a hole (the pierced top and bottom of the box) have an outer FACE_OUTER_BOUND and one inner FACE_BOUND;
+  * names, colour and layer of an exported object (check_styled): STYLED_ITEM -> COLOUR_RGB, PRESENTATION_LAYER_ASSIGNMENT;
+  * the vertex points span the closed-form box (0,0,0)-(10,10,10), resp. z 0..10 for the cylinder (its seam vertices have no x/y range);
+  * every analytic CYLINDRICAL_SURFACE has the closed-form radius (2, resp. 3).
+
+    python3 stx_check.py <directory> [text the application printed]
+"""
+import os
+import re
+import sys
+
+D = sys.argv[1]
+APP_OUT = open(sys.argv[2], errors="replace").read() if len(sys.argv) > 2 else ""
+failed = 0
+
+
+def report(ok, name, detail=""):
+    global failed
+    if not ok:
+        failed += 1
+    print(("ok   " if ok else "FAIL ") + "STX_" + name + (": " + detail if detail else ""))
+
+
+def parse(path):
+    text = open(path, errors="replace").read()
+    i = text.find("DATA;")
+    j = text.rfind("ENDSEC;")
+    if i < 0 or j < 0:
+        return None
+    data = text[i + 5:j]
+    ents = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*(.*?);\s*(?=#\d+\s*=|\Z)", data, re.S):
+        body = m.group(2).strip()
+        mm = re.match(r"([A-Z0-9_]+)\s*\((.*)\)\s*$", body, re.S)
+        if mm:
+            ents[int(m.group(1))] = (mm.group(1), mm.group(2))
+        else:
+            ents[int(m.group(1))] = ("COMPLEX", body)
+    return ents
+
+
+def refs(s):
+    return [int(x) for x in re.findall(r"#(\d+)", s)]
+
+
+def split_top(args):
+    out, depth, cur = [], 0, ""
+    for ch in args:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur.strip())
+    return out
+
+
+def numbers(s):
+    return [float(x) for x in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", s)]
+
+
+def check(stem, faces, planes, cylinders, radius, bb, holed_faces):
+    path = os.path.join(D, stem + ".stp")
+    if not os.path.exists(path):
+        report(False, stem + "_written", path + " was not written")
+        return
+    ents = parse(path)
+    if ents is None:
+        report(False, stem + "_parsed", "no DATA section")
+        return
+    kinds = {}
+    for k, (t, a) in ents.items():
+        kinds.setdefault(t, []).append(k)
+    n = lambda t: len(kinds.get(t, []))
+    report(n("MANIFOLD_SOLID_BREP") == 1 and n("CLOSED_SHELL") == 1, stem + "_one_solid_one_closed_shell",
+           "MANIFOLD_SOLID_BREP %d, CLOSED_SHELL %d" % (n("MANIFOLD_SOLID_BREP"), n("CLOSED_SHELL")))
+    report(n("ADVANCED_FACE") == faces, stem + "_face_count", "%d ADVANCED_FACE (expected %d)" % (n("ADVANCED_FACE"), faces))
+    shell_faces = []
+    for k in kinds.get("CLOSED_SHELL", []):
+        shell_faces += refs(ents[k][1])
+    report(sorted(shell_faces) == sorted(kinds.get("ADVANCED_FACE", [])), stem + "_shell_lists_every_face")
+    uses = {}
+    for k in kinds.get("ORIENTED_EDGE", []):
+        a = split_top(ents[k][1])
+        e = refs(a[3])[0]
+        uses[e] = uses.get(e, 0) + 1
+    edges = kinds.get("EDGE_CURVE", [])
+
+    def curve_kind(e):
+        return ents[refs(split_top(ents[e][1])[3])[0]][0]
+
+    # Straight / spline edges are shared between the two faces along them: each used exactly twice. A CIRCLE edge is written per
+    # face (the faces split a sewn rim at different vertices), so rims are checked by geometry below instead.
+    plain = [e for e in edges if curve_kind(e) != "CIRCLE"]
+    arcs = [e for e in edges if curve_kind(e) == "CIRCLE"]
+    bad = [e for e in plain if uses.get(e, 0) != 2]
+    report(plain and not bad, stem + "_every_non_arc_edge_used_exactly_twice", "%d edges, %d not used twice" % (len(plain), len(bad)))
+    if stem == "cut":
+        rims = {}
+        for e in arcs:
+            circ = ents[refs(split_top(ents[e][1])[3])[0]]
+            ax = refs(split_top(circ[1])[1])[0]
+            cp = refs(ents[ax][1])[0]
+            c = numbers(split_top(ents[cp][1])[-1])[:3]
+            r = numbers(split_top(circ[1])[-1])[-1]
+            rims[(round(c[0], 1), round(c[1], 1), round(c[2], 1), round(r, 1))] = rims.get((round(c[0], 1), round(c[1], 1), round(c[2], 1), round(r, 1)), 0) + uses.get(e, 0)
+        report(len(rims) == 2 and all(v == 2 for v in rims.values()), stem + "_each_rim_circle_is_used_by_exactly_its_two_faces", "rim uses by (cx, cy, cz, r): %s" % rims)
+    if stem == "cut":
+        # the hole of a pierced box is a circle of radius 2: its edges must be exact CIRCLE curves (>= 2: top and bottom rim), not
+        # hundreds of short LINE segments (the sealed Boolean's hole edges are polylines today)
+        # the sewn rim chords (up to 1e-3 off the radius-2 circle) are written as exact arcs by the exporter's tolerant fit
+        report(n("CIRCLE") >= 2, stem + "_hole_rims_are_exact_circles", "%d CIRCLE, %d LINE entities" % (n("CIRCLE"), n("LINE")))
+    report(n("CYLINDRICAL_SURFACE") == cylinders, stem + "_cylindrical_surfaces", "%d (expected %d)" % (n("CYLINDRICAL_SURFACE"), cylinders))
+    radii = [numbers(split_top(ents[k][1])[-1])[-1] for k in kinds.get("CYLINDRICAL_SURFACE", [])]
+    report(radii and all(abs(r - radius) < 1e-6 for r in radii), stem + "_cylinder_radius", "radii %s (expected %g)" % (radii, radius))
+    if planes is not None:
+        report(n("PLANE") == planes, stem + "_plane_count", "%d PLANE (expected %d)" % (n("PLANE"), planes))
+    # faces with a hole: an outer bound and one inner bound
+    per_face = []
+    for k in kinds.get("ADVANCED_FACE", []):
+        bounds = refs(split_top(ents[k][1])[1])
+        per_face.append(len(bounds))
+    report(sorted(per_face).count(2) == holed_faces and max(per_face) <= 2, stem + "_faces_with_a_hole",
+           "bounds per face %s (expected %d faces with 2)" % (sorted(per_face), holed_faces))
+    pts = []
+    for k in kinds.get("VERTEX_POINT", []):
+        p = refs(ents[k][1])[0]
+        pts.append(tuple(numbers(split_top(ents[p][1])[-1])[:3]))
+    if pts:
+        got = tuple(min(p[i] for p in pts) for i in range(3)) + tuple(max(p[i] for p in pts) for i in range(3))
+        report(all(b is None or abs(a - b) < 1e-6 for a, b in zip(got, bb)), stem + "_vertex_box", "got %s expected %s" % (tuple(round(x, 6) for x in got), bb))
+    else:
+        report(False, stem + "_vertex_box", "no vertices")
+
+
+def check_styled(stem):
+    """Names, colours and layers of an exported solid (AP214 presentation): the solid keeps its name; a STYLED_ITEM naming it reaches
+    a COLOUR_RGB with the object's own colour through the standard style chain; a PRESENTATION_LAYER_ASSIGNMENT with the layer's name lists it."""
+    path = os.path.join(D, stem + ".stp")
+    if not os.path.exists(path):
+        report(False, stem + "_written", path + " was not written")
+        return
+    ents = parse(path)
+    kinds = {}
+    for k, (t, a) in ents.items():
+        kinds.setdefault(t, []).append(k)
+    solids = [k for k in kinds.get("MANIFOLD_SOLID_BREP", []) if split_top(ents[k][1])[0] == "'Slab'"]
+    report(len(solids) == 1, stem + "_solid_keeps_its_name", "MANIFOLD_SOLID_BREP names %s" % [split_top(ents[k][1])[0] for k in kinds.get("MANIFOLD_SOLID_BREP", [])])
+    if len(solids) != 1:
+        return
+    solid = solids[0]
+    styled = [k for k in kinds.get("STYLED_ITEM", []) if refs(split_top(ents[k][1])[2]) == [solid]]
+    report(len(styled) == 1, stem + "_one_styled_item_names_the_solid", "%d STYLED_ITEM(s) naming #%d" % (len(styled), solid))
+    if styled:
+        seen, todo, rgb = set(), refs(split_top(ents[styled[0]][1])[1]), None
+        while todo:
+            k = todo.pop()
+            if k in seen or k not in ents:
+                continue
+            seen.add(k)
+            t, a = ents[k]
+            if t == "COLOUR_RGB":
+                rgb = numbers(split_top(a)[-3] + "," + split_top(a)[-2] + "," + split_top(a)[-1])[-3:]
+            else:
+                todo += refs(a)
+        chain = {ents[k][0] for k in seen if k in ents}
+        report(rgb is not None and all(abs(x - y) < 1e-6 for x, y in zip(rgb, (1.0, 0.0, 0.0))), stem + "_colour_is_the_objects_red",
+               "COLOUR_RGB %s through %s" % (rgb, sorted(chain)))
+    layers = [k for k in kinds.get("PRESENTATION_LAYER_ASSIGNMENT", []) if split_top(ents[k][1])[0] == "'Walls'"]
+    report(len(layers) == 1 and solid in refs(ents[layers[0]][1]), stem + "_layer_assignment_lists_the_solid_on_layer_Walls",
+           "PRESENTATION_LAYER_ASSIGNMENTs %s" % [split_top(ents[k][1])[0] for k in kinds.get("PRESENTATION_LAYER_ASSIGNMENT", [])])
+
+
+check("cut", 7, None, 1, 2.0, (0, 0, 0, 10, 10, 10), 2)
+check("cyl", 3, 2, 1, 3.0, (None, None, 0, None, None, 10), 0)
+check_styled("styled")
+# round trip: the same object read back by the importer and exported again keeps its name, colour and layer
+check_styled("styled2")
+report(re.search(r"layer Walls name 'Slab'", APP_OUT) is not None, "import_puts_the_object_on_layer_Walls_with_its_name",
+       "List line after the import: %s" % ([l for l in APP_OUT.splitlines() if "Object " in l and " layer " in l][-1:] or "none"))
+sys.exit(0)

@@ -1,0 +1,9 @@
+Box 0,0,0 5,5,0 5
+SelLast
+SetObjectDisplayMode
+Pen
+ObjectDisplayModes
+Undo
+ObjectDisplayModes
+Redo
+ObjectDisplayModes

@@ -1,0 +1,281 @@
+# Automatic history propagation + EditHistory (cmd_history.cpp, Document::
+# JoinPendingChange). With History On, editing a SOURCE object (here: Move and
+# Scale of a curve, Delete, Undo/Redo) rebuilds every recorded dependent in
+# dependency order inside the SAME undo step - no UpdateHistory call anywhere in
+# sections A. Every claim is a measured Volume / Bounding box / Length / Area.
+#   A1  curve -> Extrude -> OffsetSrf (2-deep chain): Move, Scale, Undo, Redo
+#   A2  curve -> Extrude -> BooleanIntersection (boolean chain)
+#   A3  failure: the root curve is deleted (reason printed, dependents keep
+#       their geometry); Undo of the Delete
+#   A4  History Off: nothing propagates; UpdateHistory still works on demand
+#   A5  an unrelated edit rebuilds nothing
+#   E   EditHistory: change the recorded options of a construction (extrude
+#       distance/bothsides, tapered draft, revolve angle, pipe radius, loft
+#       style, offset distance, boolean operation/swap), measured before/after,
+#       validation, one undo step, dependents follow
+# Object ids are the deterministic 1-based counter Document::Add assigns.
+SetActiveViewport Top
+
+# ===================================================================== A1
+History On
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 1
+Extrude
+10
+SelNone
+SelID 2
+OffsetSrf
+1
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+# (no UpdateHistory) the extrusion (2) and its offset (3) must already follow
+# the curve: the offset solid's box moved 5 in +X (-1..11 -> 4..16).
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 1
+Scale 5,0,0 2
+SelNone
+SelID 3
+Volume
+Undo
+SelNone
+SelID 3
+Volume
+Redo
+SelNone
+SelID 3
+Volume
+SelAll
+Hide
+SelNone
+
+# ===================================================================== A5
+# An edit of an object nothing depends on rebuilds nothing (no History: line).
+Box 100,0,0 110,10,0 10
+SelNone
+SelID 5
+Move
+0,0,0
+1,0,0
+History
+
+# ===================================================================== A2
+SelNone
+HistoryPurge
+Rectangle 30,0,0 40,10,0
+SelNone
+SelID 6
+Extrude
+10
+Box 35,5,0 45,15,0 10
+SelNone
+SelID 7
+BooleanIntersection
+SelID 8
+Enter
+SelNone
+SelID 9
+Volume
+SelNone
+SelID 6
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 9
+Volume
+Undo
+SelNone
+SelID 9
+Volume
+Redo
+SelNone
+SelID 9
+Volume
+
+# ===================================================================== A3
+# Failure: delete the root curve. Nothing is rebuilt; the printed reason names
+# the missing source and the dependents keep their geometry; Undo brings it back.
+SelNone
+SelID 6
+Delete
+SelNone
+SelID 9
+Volume
+Undo
+SelNone
+SelID 6
+Move
+0,0,0
+-5,0,0
+SelNone
+SelID 9
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== A4
+# History Off: no automatic propagation; the explicit UpdateHistory still works.
+Rectangle 50,0,0 60,10,0
+SelNone
+SelID 10
+Extrude
+10
+SelNone
+SelID 11
+Volume
+History Off
+SelNone
+SelID 10
+Scale 50,0,0 2
+SelNone
+SelID 11
+Volume
+UpdateHistory
+SelNone
+SelID 11
+Volume
+History On
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+
+# ===================================================================== E
+# EditHistory. E1: Extrude -> OffsetSrf chain edited by option; dependents
+# follow; invalid edits change nothing; the whole edit (record included) is ONE
+# undo step.
+Rectangle 0,50,0 10,60,0
+SelNone
+SelID 12
+Extrude
+10
+SelNone
+SelID 13
+OffsetSrf
+1
+EditHistory 13
+EditHistory 13 distance=20
+SelNone
+SelID 14
+Volume
+EditHistory 13 distance=0
+EditHistory 13 bogus=1
+EditHistory 13 bothsides=maybe
+EditHistory 12
+EditHistory 99
+EditHistory 13 bothsides=yes
+SelNone
+SelID 14
+Volume
+Undo
+SelNone
+SelID 14
+Volume
+EditHistory 13
+Undo
+SelNone
+SelID 14
+Volume
+EditHistory 13
+Redo
+SelNone
+SelID 14
+Volume
+ListHistory
+ShowHistory
+SelAll
+Hide
+SelNone
+# E2: tapered extrusion - draft angle, then distance and draft together.
+Circle 0,0,0 10
+SelNone
+SelID 15
+ExtrudeCrvTapered
+5
+EditHistory 16
+EditHistory 16 draft=20
+EditHistory 16 draft=95
+EditHistory 16 distance=10 draft=0
+SelAll
+Hide
+SelNone
+# E3: revolve angle.
+Polyline 5,0,100 7,0,100 7,0,103 5,0,103 5,0,100
+Enter
+SelNone
+SelID 17
+Revolve
+0,0,100
+0,0,101
+EditHistory 18 angle=180
+EditHistory 18 angle=400
+SelAll
+Hide
+SelNone
+# E4: pipe radius.
+Line 0,0,200 10,0,200
+SelNone
+SelID 19
+Pipe
+1
+EditHistory 20 radius=2
+EditHistory 20 radius=-1
+SelAll
+Hide
+SelNone
+# E5: loft style (Normal -> Straight is the ruled loft: 2 * 10 * sqrt(5^2+3^2)).
+Line 0,0,300 10,0,300
+Line 0,5,303 10,5,303
+Line 0,10,300 10,10,300
+SelNone
+SelID 21
+SelID 22
+SelID 23
+Loft
+EditHistory 24
+EditHistory 24 style=straight
+EditHistory 24 style=normal
+SelAll
+Hide
+SelNone
+# E6: offset distance (the sign picks the side: -2 is inward).
+Circle 60,100,0 5
+SelNone
+SelID 25
+Offset Distance=2 60,100,0
+EditHistory 26 distance=-1
+EditHistory 26 distance=1
+SelAll
+Hide
+SelNone
+# E7: boolean operand swap and operation.
+Rectangle 0,150,0 10,160,0
+SelNone
+SelID 27
+Extrude
+10
+Box 8,150,0 12,160,0 10
+SelNone
+SelID 28
+BooleanDifference
+SelID 29
+Enter
+EditHistory 30
+EditHistory 30 swap=yes
+EditHistory 30 swap=yes
+EditHistory 30 operation=union
+EditHistory 30 operation=intersection
+History

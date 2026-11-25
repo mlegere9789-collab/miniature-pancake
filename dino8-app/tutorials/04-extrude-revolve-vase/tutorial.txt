@@ -1,0 +1,30 @@
+#title: Extrude and revolve a vase
+#summary: Sketch a smooth profile, revolve it into a vase, then extrude a round foot - the two most useful solid-making commands.
+#level: Beginner
+# Source: extends docs/tutorial_scripts/07_revolve_vase.txt and 10_profile_extrude.txt.
+#narrate: A vase is a profile spun around an axis. We sketch the profile first, using the Top view with the height typed as Z so it lies in the vertical plane.
+SetActiveViewport Top
+InterpCrv 0,0,0 3,0,4 2,0,8 4,0,12 0,0,14
+Enter
+@expect_objects 1
+#narrate: InterpCrv draws a smooth curve through the points we give it: base, belly, neck and lip. Enter finishes the curve.
+SelLast
+Revolve
+0,0,0
+0,0,20
+@expect_objects 2
+#narrate: Revolve takes the selected curve, then two points that define the axis. The curve sweeps a full turn and a vase surface appears.
+SelNone
+SetActiveViewport Perspective
+MaxViewport
+ZoomExtents
+#narrate: Switch to the Perspective view and maximize it to see the vase in three dimensions.
+Circle 0,0,-2 5
+SelLast
+ExtrudeCrv 2
+@expect_objects 4
+#narrate: Extrude is the other workhorse. A circle selected and extruded two units becomes a solid disc, here a foot for the vase.
+ZoomExtents
+SelID 2
+List
+#narrate: Revolve and Extrude both leave the source curve in place, so you can edit it and make the shape again.

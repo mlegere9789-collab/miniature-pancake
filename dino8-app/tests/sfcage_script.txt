@@ -1,0 +1,86 @@
+# ToSubD of a plain NURBS surface (the "SSC_" section, tests/sections/85_sfcage.sh).
+#
+# A Surface (Plane, SrfPt, an extruded arc...) used to be tessellated (an adaptive triangle mesh, two triangles for a flat plane) and handed to
+# the SubD as its cage, with nothing interpolated and nothing measured. It now gets a quad cage on its own (u, v) grid, the cage is
+# interpolated onto the surface and the limit surface is measured against the exact surface.
+# Fixtures (the active CPlane is the world XY plane in the Top viewport):
+#   plane      Plane 0,0,0 12,12,0                     a flat 12 x 12 sheet
+#   twisted    SrfPt 0,0,0 10,0,0 10,10,10 0,10,0      the bilinear patch z = x y / 10
+#   cylinder   Arc 0,0,0 10,0,0 0,10,0 then ExtrudeCrv 10: a quarter of a radius-10 cylinder, 10 high (a rational surface)
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# ---- flat plane: the first cage (6 x 6 cells) already holds the limit surface exactly on the plane
+New
+SSCBEGIN_plane
+Plane 0,0,0 12,12,0
+SelLast
+ToSubD
+SelLast
+SelSubDVertices
+Enter
+SelLast
+SelSubDVertices
+Type=Corner
+Enter
+SelLast
+SelSubDVertices
+Type=Crease
+Enter
+SelLast
+SelSubDVertices
+Type=Smooth
+Enter
+SelLast
+SelSubDEdges
+Type=All
+Enter
+SelLast
+SelSubDEdges
+Type=Boundary
+Enter
+SelLast
+SubDVertexInfo
+4,6,0
+12,12,0
+Enter
+
+# ---- the bilinear patch z = x y / 10
+New
+SSCBEGIN_twisted
+SrfPt 0,0,0 10,0,0 10,10,10 0,10,0
+SelLast
+ToSubD
+SelLast
+SubDVertexInfo
+5,5,2.5
+10,10,10
+Enter
+# one Catmull-Clark step: the new vertices lie BETWEEN the old cage vertices, so their limit points probe the surface off the interpolated points
+SelLast
+SubDivide
+SelLast
+SubDVertexInfo
+2.1,3.3,0.7
+6.4,7.9,5.1
+8.8,1.4,1.3
+Enter
+
+# ---- a quarter cylinder: a curved, rational surface
+New
+SSCBEGIN_cylinder
+Arc 0,0,0 10,0,0 0,10,0
+SelLast
+ExtrudeCrv
+10
+SelLast
+ToSubD
+# (List, not a sub-object selection: selecting all 2401 vertices of this cage makes every later viewport frame rebuild the control net per selected element)
+SelLast
+List
+SelLast
+SubDVertexInfo
+10,0,5
+7.0711,7.0711,5
+Enter

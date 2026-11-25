@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-SETS-0014 (Insert Items): player + bake, read back by sections/95_r2insert.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 22
+SelAll
+List

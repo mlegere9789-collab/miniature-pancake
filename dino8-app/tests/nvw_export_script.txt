@@ -1,0 +1,18 @@
+# Named views in .3dm, write side (the "NVW_" section, tests/sections/90_nvw.sh). Save3dm used to write a named view's camera but
+# leave the frustum at OpenNURBS' default: the view's zoom (a parallel view's height, a perspective view's lens) was not in the file,
+# so a parallel view reopened 40 units tall whatever it was saved at and a perspective lens came back as ~0 mm (kept at the default).
+# The Top view is zoomed in once (height 80 x 0.85^2) and the Perspective lens set to 35 mm, both saved as named views, then the
+# document is saved. smoke.sh reads the printed Camera lines here, the file through view3dm_check (a plain OpenNURBS reader), and
+# the reopened file in nvw_reopen_script.txt.
+SetActiveViewport Top
+Zoom In
+Camera
+Enter
+NamedView Save TopV
+SetActiveViewport Perspective
+ZoomLens 35
+Camera
+Enter
+NamedView Save PerspV
+Point 0,0,0
+SaveAs @TMP@/nv_export.3dm

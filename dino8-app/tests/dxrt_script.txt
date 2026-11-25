@@ -1,0 +1,34 @@
+SetActiveViewport Top
+New
+Line 0,0,0 10,0,0
+Circle 20,0,0 5
+Arc 40,0,0 45,0,0 40,5,0
+NewLayer Walls
+Line 0,5,0 10,5,0
+SetLayer Default
+Polyline 0,20,0 10,20,0 10,30,0 0,30,0
+Enter
+Rectangle 100,100,0 120,110,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+Ellipse 60,0,0 68,0,0 60,3,0
+InterpCrv 0,40,0 5,45,0 10,40,0 15,45,0
+Enter
+DimLinear 100,0,0 140,0,0 100,10,0
+DimAligned 100,20,0 130,60,0 90,40,0
+Circle 200,0,0 5
+SelLast
+DimRadius
+210,0,0
+Circle 200,30,0 4
+SelLast
+DimDiameter
+210,30,0
+SelNone
+SelAll
+Export @TMP@/rt_a.dxf
+New
+Import @TMP@/rt_a.dxf
+SelAll
+Export @TMP@/rt_b.dxf

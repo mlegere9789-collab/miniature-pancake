@@ -1,0 +1,1027 @@
+// Point and curve creation commands.
+#include "commands/cmd_common.h"
+#include "commands/count_limits.h"
+
+namespace dino8::app {
+
+namespace {
+
+// Global cubic interpolation through `pts` (OpenNURBS' clamped-uniform NURBS
+// as a starting shape, then a fixed-point relaxation that nudges control
+// points until the curve actually passes through every input point at its
+// chord-length parameter). Shared by MultiPointCurveCommand's Interpolated
+// kind (InterpCrv/Sketch, picked points) and CurveThroughPt (existing point
+// objects). Returns false (curve left untouched) if OpenNURBS can't build a
+// clamped-uniform NURBS for this point count (e.g. fewer than 2 points).
+bool InterpolatedNurbs(const std::vector<Point3d>& pts, kernel::NurbsCurve& out) {
+  ON_3dPointArray arr;
+  for (const Point3d& p : pts) arr.Append(p);
+  ON_NurbsCurve nc;
+  if (!nc.CreateClampedUniformNurbs(3, 3, arr.Count(), arr.Array())) return false;
+  out.raw() = nc;
+  for (int iter = 0; iter < 30; ++iter) {
+    for (int i = 0; i < arr.Count(); ++i) {
+      double t = out.raw().Domain().ParameterAt(static_cast<double>(i) / (arr.Count() - 1));
+      Point3d on = out.raw().PointAt(t);
+      Point3d cv;
+      out.raw().GetCV(i, cv);
+      out.raw().SetCV(i, cv + (arr[i] - on));
+    }
+  }
+  return true;
+}
+
+// Polyline / control-point curve / interpolated curve: pick points until Enter.
+class MultiPointCurveCommand : public Command {
+ public:
+  enum class Kind { Polyline, ControlPoint, Interpolated, Lines };
+  explicit MultiPointCurveCommand(Kind kind, int degree = 3) : kind_(kind), degree_(degree) {}
+  void Begin(CommandContext&) override {
+    WantPoint("Start of curve");
+    options = {{"Close", "", {}, false, false}, {"Undo", "", {}, false, false}, {"Degree", std::to_string(degree_), {}, true, false}};
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+    WantPoint(pts_.size() == 1 ? "Next point" : "Next point. Press Enter when done");
+    if (kind_ == Kind::Lines && pts_.size() == 1 && segs_.empty()) first_ = p;
+    if (kind_ == Kind::Lines && pts_.size() == 2) {
+      segs_.push_back(AddCurve(ctx, PolylineCurve(pts_), "Lines"));
+      seg_starts_.push_back(pts_.front());
+      Point3d last = pts_.back();
+      pts_.clear();
+      pts_.push_back(last);
+    }
+  }
+  void OnOption(CommandContext& ctx, const std::string& name, const std::string& value) override {
+    if (kind_ == Kind::Lines && name == "Close") {
+      // AutoCAD LINE, Close option: a closing segment from the last point back to the start of the chain (needs two segments).
+      if (segs_.size() < 2 || !first_ || pts_.empty()) { ctx.Warn("Lines: Close needs at least two segments; keep picking points"); return; }
+      if (pts_.back().DistanceTo(*first_) > 1e-12) AddCurve(ctx, PolylineCurve({pts_.back(), *first_}), "Lines");
+      ctx.ClearPreview();
+      Finish();
+      return;
+    }
+    if (kind_ == Kind::Lines && name == "Undo" && !segs_.empty()) {
+      // AutoCAD LINE, Undo option: removes only the last segment and continues from its start.
+      ctx.Doc().BeginChange("Lines");
+      ctx.Doc().Remove(segs_.back());
+      segs_.pop_back();
+      pts_.assign(1, seg_starts_.back());
+      seg_starts_.pop_back();
+      ctx.SetLastPoint(pts_.back());
+      return;
+    }
+    if (name == "Close") { closed_ = true; OnEnter(ctx); }
+    else if (name == "Undo" && !pts_.empty()) { pts_.pop_back(); if (!pts_.empty()) ctx.SetLastPoint(pts_.back()); }
+    else if (name == "Degree") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 11) degree_ = d; options[2].value = std::to_string(degree_); }
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (pts_.size() >= 2) {
+      std::vector<Point3d> pts = pts_;
+      if (closed_ && pts.size() >= 3) pts.push_back(pts.front());
+      if (kind_ == Kind::Polyline || kind_ == Kind::Lines || static_cast<int>(pts.size()) <= 2) {
+        AddCurve(ctx, PolylineCurve(pts), "Polyline");
+      } else if (kind_ == Kind::ControlPoint) {
+        int deg = std::min(degree_, static_cast<int>(pts.size()) - 1);
+        AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, deg), "Curve");
+      } else {
+        // Interpolated: global cubic interpolation through the points.
+        kernel::NurbsCurve k;
+        if (InterpolatedNurbs(pts, k)) AddCurve(ctx, k, "InterpCrv");
+      }
+    }
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    std::vector<Point3d> pv = pts_;
+    pv.push_back(h);
+    if (kind_ == Kind::ControlPoint && pv.size() >= 3) {
+      int deg = std::min(degree_, static_cast<int>(pv.size()) - 1);
+      ctx.AddPreviewCurve(kernel::NurbsCurve::FromControlPoints(pv, deg));
+      ctx.AddPreviewPolyline(pv);
+    } else {
+      ctx.AddPreviewPolyline(pv);
+    }
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  Kind kind_;
+  int degree_;
+  bool closed_ = false;
+  std::vector<Point3d> pts_;
+  // Lines only: the segments made so far (for Undo), their start points, and the first point of the chain (for Close).
+  std::vector<ObjectId> segs_;
+  std::vector<Point3d> seg_starts_;
+  std::optional<Point3d> first_;
+};
+
+// CurveThroughPt: interpolate a curve through selected point OBJECTS (real
+// Rhino semantics), not through freshly-picked locations -- that's InterpCrv.
+// Points are ordered by object id (creation order) since there's no separate
+// "pick order" recorded for a selection.
+class CurveThroughPtCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select point objects to interpolate a curve through", 2); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    std::vector<ObjectId> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<Point3d> pts;
+    for (ObjectId id : sorted) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Point) pts.push_back(o->point);
+    }
+    if (pts.size() < 2) { ctx.Warn("CurveThroughPt: select at least 2 point objects"); Finish(); return; }
+    kernel::NurbsCurve k;
+    if (InterpolatedNurbs(pts, k)) {
+      AddCurve(ctx, k, "CurveThroughPt");
+      ctx.Print("CurveThroughPt: interpolated a curve through " + std::to_string(pts.size()) + " point object(s)");
+    } else {
+      ctx.Warn("CurveThroughPt: could not build a curve through the selected points");
+    }
+    Finish();
+  }
+};
+
+class PointsCommandMany : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Location of point object. Press Enter when done"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override { AddObject(ctx, SceneObject::MakePoint(p), "Points"); ctx.SetLastPoint(p); }
+  void OnEnter(CommandContext&) override { Finish(); }
+};
+
+void AddCircle(CommandContext& ctx, const ON_Circle& c, const char* label) {
+  ON_ArcCurve ac(c);
+  kernel::NurbsCurve k;
+  if (CurveFromON(ac, k)) AddCurve(ctx, k, label);
+  else ctx.Warn(std::string(label) + ": a circle of radius " + FormatNumber(c.Radius()) + " cannot be built (the radius is too large or not a valid number)");
+}
+
+void PreviewCircle(CommandContext& ctx, const ON_Circle& c) {
+  ctx.AddPreviewPolyline(CirclePoints(c));
+}
+
+// A visible, unlocked LINEAR curve object nearest to `p`, as its two end points; used by Circle's TTR option.
+bool NearestLineEnds(CommandContext& ctx, Point3d p, Point3d& a, Point3d& b) {
+  double best = 1e300;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.kind != ObjectKind::Curve || !o.curve || !ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    if (!o.curve->IsLinear()) continue;
+    const double t = o.curve->ClosestPointParameter(p);
+    const double d = o.curve->PointAt(t).DistanceTo(p);
+    if (d < best) { best = d; a = o.curve->PointAt(o.curve->Domain().min); b = o.curve->PointAt(o.curve->Domain().max); }
+  }
+  return best < 1e299;
+}
+
+// AutoCAD CIRCLE options added here: 2Point (the two ends of a diameter) and TTR (tangent, tangent, radius, for two straight
+// lines: of the four circles of that radius tangent to both lines, the one whose tangent points lie nearest to the picks).
+class CircleCommand : public PointThenDistanceCommand {
+ public:
+  CircleCommand()
+      : PointThenDistanceCommand("Center of circle", "Radius",
+                                 [](CommandContext& ctx, Point3d c, double r, Point3d) {
+                                   if (!(r > 0)) { ctx.Warn("Circle: the radius must be greater than zero"); return; }
+                                   AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, c), r), "Circle");
+                                 }, 10.0) {
+    preview_ = [](CommandContext& ctx, Point3d c, double r, Point3d) { if (r > 0) PreviewCircle(ctx, ON_Circle(ActivePlaneAt(ctx, c), r)); };
+  }
+  static ON_Plane ActivePlaneAt(CommandContext& ctx, Point3d origin) {
+    ON_Plane pl = ActivePlane(ctx);
+    pl.SetOrigin(origin);
+    return pl;
+  }
+  void Begin(CommandContext& ctx) override {
+    PointThenDistanceCommand::Begin(ctx);
+    options = {{"Diameter", "", {}, false, false}, {"3Point", "", {}, false, false}, {"Vertical", "", {}, false, false},
+               {"2Point", "", {}, false, false}, {"TTR", "", {}, false, false}};
+  }
+  void OnOption(CommandContext& ctx, const std::string& name, const std::string&) override {
+    if (name == "Diameter") { diameter_ = true; p2_ = "Diameter"; if (base_) WantPoint("Diameter"); }
+    else if (name == "3Point") { ctx.Engine().Execute("Circle3Pt"); }
+    else if (name == "2Point" && !base_) { two_point_ = true; WantPoint("First end point of circle's diameter"); }
+    else if (name == "TTR" && !base_) { ttr_ = true; WantPoint("Point on object for the first tangent"); }
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (ttr_) {
+      if (ttr_stage_ != 2) return;
+      if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Circle: the radius must be greater than zero"); return; }
+      BuildTtr(ctx, v);
+      return;
+    }
+    if (two_point_) return;
+    PointThenDistanceCommand::OnNumber(ctx, diameter_ ? v / 2 : v);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (two_point_ || ttr_) return;
+    PointThenDistanceCommand::OnEnter(ctx);
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (two_point_ || ttr_) return;
+    PointThenDistanceCommand::OnHover(ctx, h);
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (two_point_) {
+      ctx.SetLastPoint(p);
+      if (!tp_a_) { tp_a_ = p; WantPoint("Second end point of circle's diameter"); return; }
+      ctx.ClearPreview();
+      const double d = tp_a_->DistanceTo(p);
+      if (!(d > 0)) { ctx.Warn("Circle: the two diameter end points coincide"); Finish(); return; }
+      AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, (*tp_a_ + p) * 0.5), d / 2), "Circle");
+      Finish();
+      return;
+    }
+    if (ttr_) {
+      Point3d a, b;
+      if (!NearestLineEnds(ctx, p, a, b)) { ctx.Warn("Circle TTR: pick a straight line"); return; }
+      ctx.SetLastPoint(p);
+      if (ttr_stage_ == 0) { tl_[0] = {a, b}; tpick_[0] = p; ttr_stage_ = 1; WantPoint("Point on object for the second tangent"); return; }
+      if (ttr_stage_ == 1) { tl_[1] = {a, b}; tpick_[1] = p; ttr_stage_ = 2; WantNumber("Radius of circle", 10.0); return; }
+      return;
+    }
+    if (base_ && diameter_) { OnNumber(ctx, (p - *base_).Length()); return; }
+    PointThenDistanceCommand::OnPoint(ctx, p);
+  }
+  void BuildTtr(CommandContext& ctx, double r) {
+    const ON_Plane pl = ActivePlane(ctx);
+    auto uv = [&](Point3d q, double& u, double& v) { u = ON_DotProduct(q - pl.origin, pl.xaxis); v = ON_DotProduct(q - pl.origin, pl.yaxis); };
+    double ax[2], ay[2], dx[2], dy[2], px[2], py[2];
+    for (int i = 0; i < 2; ++i) {
+      double bx, by;
+      uv(tl_[i].first, ax[i], ay[i]);
+      uv(tl_[i].second, bx, by);
+      const double len = std::hypot(bx - ax[i], by - ay[i]);
+      if (!(len > 0)) { ctx.Warn("Circle TTR: a picked line has no length in the construction plane"); Finish(); return; }
+      dx[i] = (bx - ax[i]) / len;
+      dy[i] = (by - ay[i]) / len;
+      uv(tpick_[i], px[i], py[i]);
+    }
+    // Unit normals (-dy, dx); centre c satisfies n_i . (c - a_i) = s_i r with s_i = +-1.
+    const double n1x = -dy[0], n1y = dx[0], n2x = -dy[1], n2y = dx[1];
+    const double det = n1x * n2y - n1y * n2x;
+    if (std::fabs(det) < 1e-12) { ctx.Warn("Circle TTR: the two lines are parallel"); Finish(); return; }
+    double best = 1e300, bcx = 0, bcy = 0;
+    for (int s1 = -1; s1 <= 1; s1 += 2) {
+      for (int s2 = -1; s2 <= 1; s2 += 2) {
+        const double r1 = n1x * ax[0] + n1y * ay[0] + s1 * r, r2 = n2x * ax[1] + n2y * ay[1] + s2 * r;
+        const double cx = (r1 * n2y - n1y * r2) / det, cy = (n1x * r2 - r1 * n2x) / det;
+        // Tangent points: the centre moved back along the normal by s_i r.
+        const double t1x = cx - s1 * r * n1x, t1y = cy - s1 * r * n1y, t2x = cx - s2 * r * n2x, t2y = cy - s2 * r * n2y;
+        const double score = std::hypot(t1x - px[0], t1y - py[0]) + std::hypot(t2x - px[1], t2y - py[1]);
+        if (score < best) { best = score; bcx = cx; bcy = cy; }
+      }
+    }
+    ctx.ClearPreview();
+    AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, pl.PointAt(bcx, bcy)), r), "Circle");
+    Finish();
+  }
+  bool diameter_ = false;
+  bool two_point_ = false;
+  bool ttr_ = false;
+  int ttr_stage_ = 0;
+  std::optional<Point3d> tp_a_;
+  std::pair<Point3d, Point3d> tl_[2];
+  Point3d tpick_[2];
+};
+
+
+// Polygon / star with a NumSides option, centre and corner picks. AutoCAD POLYGON options: Inscribed (the picked point is a corner,
+// the default) or Circumscribed (Circumscribed=Yes: the radius is the distance from the centre to the MIDDLE of an edge, so the
+// corners lie at radius / cos(pi / n) and the picked direction points at an edge midpoint), and Edge: two endpoints of one edge,
+// the polygon being drawn counterclockwise from the first endpoint to the second (it lies on the left of that edge).
+class PolygonCommand : public Command {
+ public:
+  explicit PolygonCommand(bool star) : star_(star) {}
+  void Begin(CommandContext&) override {
+    WantPoint("Center of polygon");
+    options = {{"NumSides", std::to_string(sides_), {}, true, false}, {"Edge", "", {}, false, false}};
+    if (!star_) options.push_back({"Circumscribed", "No", {"Yes", "No"}, false, true});
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "NumSides") { int k = std::atoi(v.c_str()); if (k >= 3 && k <= 360) sides_ = k; options[0].value = std::to_string(sides_); }
+    if (n == "Edge" && !star_) {
+      edge_mode_ = true;
+      if (!center_) WantPoint("First endpoint of edge");
+    }
+    if (n == "Circumscribed" && !star_) {
+      circumscribed_ = (v == "Yes");
+      for (OptionSpec& o : options) if (o.name == "Circumscribed") o.value = circumscribed_ ? "Yes" : "No";
+    }
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!center_) { int k = std::atoi(t.c_str()); if (k >= 3 && k <= 360) { sides_ = k; options[0].value = std::to_string(sides_); ctx.Print("NumSides=" + std::to_string(sides_)); } }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (edge_mode_ && !star_ && !center_) {
+      if (!edge0_) { edge0_ = p; WantPoint("Second endpoint of edge"); return; }
+      ctx.ClearPreview();
+      std::vector<Point3d> pts = BuildEdge(ctx, *edge0_, p, true);
+      if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), "Polygon");
+      else ctx.Warn("Polygon: the two edge endpoints coincide, so the polygon has no size");
+      Finish();
+      return;
+    }
+    if (!center_) { center_ = p; WantPoint(star_ ? "Corner of star" : (circumscribed_ ? "Middle of an edge (the radius of the circle the polygon surrounds)" : "Corner of polygon")); return; }
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = Build(ctx, p, true);
+    if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), star_ ? "PolygonStar" : "Polygon");
+    else ctx.Warn(std::string(star_ ? "PolygonStar" : "Polygon") + ": the corner is on the center, so the polygon has no size");
+    Finish();
+  }
+  // The polygon through the edge a-b, counterclockwise about the construction plane's normal, built in plane coordinates:
+  // side s, apothem s / (2 tan(pi/n)), centre = edge midpoint + apothem * (left normal of the edge); corner k is the first
+  // endpoint turned by 2 pi k / n about the centre.
+  std::vector<Point3d> BuildEdge(CommandContext& ctx, Point3d a, Point3d b, bool close) {
+    ON_Plane pl = ActivePlane(ctx);
+    const double ex = ON_DotProduct(b - a, pl.xaxis), ey = ON_DotProduct(b - a, pl.yaxis);
+    const double side = std::hypot(ex, ey);
+    if (!(side > 0)) return {};
+    const double ux = ex / side, uy = ey / side;
+    const double ax = ON_DotProduct(a - pl.origin, pl.xaxis), ay = ON_DotProduct(a - pl.origin, pl.yaxis);
+    const double apothem = side / (2 * std::tan(ON_PI / sides_));
+    const double cx = ax + ex / 2 - uy * apothem, cy = ay + ey / 2 + ux * apothem;
+    const double rx = ax - cx, ry = ay - cy;
+    std::vector<Point3d> pts;
+    for (int k = 0; k < sides_ + (close ? 1 : 0); ++k) {
+      const double ang = 2 * ON_PI * k / sides_;
+      pts.push_back(pl.PointAt(cx + rx * std::cos(ang) - ry * std::sin(ang), cy + rx * std::sin(ang) + ry * std::cos(ang)));
+    }
+    return pts;
+  }
+  std::vector<Point3d> Build(CommandContext& ctx, Point3d p, bool close) {
+    ON_Plane pl = ActivePlane(ctx);
+    pl.SetOrigin(*center_);
+    double r = (p - *center_).Length();
+    if (r <= 0) return {};
+    double a0 = std::atan2(ON_DotProduct(p - *center_, pl.yaxis), ON_DotProduct(p - *center_, pl.xaxis));
+    if (circumscribed_ && !star_) {
+      // p is the middle of an edge: the corners are at r / cos(pi/n), half a step either side of that direction.
+      const double half = ON_PI / sides_;
+      r = r / std::cos(half);
+      a0 += half;
+    }
+    std::vector<Point3d> pts;
+    const int n = star_ ? sides_ * 2 : sides_;
+    for (int i = 0; i < n + (close ? 1 : 0); ++i) {
+      const double rr = (star_ && (i % 2 == 1)) ? r * 0.5 : r;
+      const double a = a0 + 2 * ON_PI * i / n;
+      pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)));
+    }
+    return pts;
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (edge_mode_ && !star_ && !center_) {
+      if (!edge0_) return;
+      ctx.ClearPreview();
+      std::vector<Point3d> pv = BuildEdge(ctx, *edge0_, h, false);
+      if (!pv.empty()) ctx.AddPreviewPolyline(pv, true);
+      return;
+    }
+    if (!center_) return;
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = Build(ctx, h, false);
+    if (!pts.empty()) ctx.AddPreviewPolyline(pts, true);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool star_;
+  bool edge_mode_ = false;
+  bool circumscribed_ = false;
+  int sides_ = 6;
+  std::optional<Point3d> center_, edge0_;
+};
+
+// Divide: places point objects along each selected curve, either by a
+// fixed number of segments (NurbsCurve::DivideByCount) or by a fixed
+// segment length (NurbsCurve::DivideByLength) - the Mode option (same
+// list-choice convention ShellCommand's own Mode option above uses)
+// switches both which kernel call runs and what the number prompt means,
+// re-issuing WantNumber with the new prompt/default each time Mode
+// changes so the command line always asks for the thing Mode currently
+// selects.
+class DivideCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to divide"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Mode", "NumberOfSegments", {"NumberOfSegments", "SegmentLength"}, false, false},
+               {"Ends", ends_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+    WantNumber("Number of segments", count_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Ends") {  // Ends=No: only the interior points, as AutoCAD DIVIDE places them (n segments give n - 1 points)
+      ends_ = (v != "No");
+      for (OptionSpec& o : options) if (o.name == "Ends") o.value = ends_ ? "Yes" : "No";
+      return;
+    }
+    if (n != "Mode") return;
+    by_length_ = (v == "SegmentLength");
+    options[0].value = v;
+    WantNumber(by_length_ ? "Segment length" : "Number of segments", by_length_ ? length_ : count_);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (by_length_) {
+      if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Divide: segment length must be a positive number"); return; }
+      // A tiny length on a long curve means billions of points (Divide 1e-9 on a 10 unit line never returned).
+      for (ObjectId id : ids_) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+        const double segs = o->curve->Length(200) / v;
+        if (!(segs <= kMaxCreatedItems)) {
+          ctx.Warn("Divide: a segment length of " + FormatNumber(v) + " would make about " + FormatNumber(std::floor(segs)) +
+                   " points on curve " + std::to_string(id) + " (limit " + FormatNumber(kMaxCreatedItems) + "); give a longer segment length");
+          return;
+        }
+      }
+      length_ = v;
+    } else {
+      int c = 0;
+      std::string why;
+      if (!CountInRange(v, 1, kMaxCreatedItems, c, why)) { ctx.Warn("Divide: number of segments " + why); return; }
+      count_ = c;
+    }
+    ctx.Doc().BeginChange("Divide");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve) continue;
+      const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
+      std::vector<double> params = by_length_ ? curve.DivideByLength(length_) : curve.DivideByCount(count_);
+      if (!ends_ && !params.empty()) {
+        // Interior points only. An open curve loses its first and last division parameter (the two end points); a closed
+        // curve keeps its start point (the seam is a real division point) and loses only the repeated last one.
+        const kernel::Interval dom = curve.Domain();
+        const double eps = 1e-12 * std::max(1.0, std::fabs(dom.max - dom.min));
+        if (curve.IsClosed()) {
+          if (params.size() > 1 && std::fabs(params.back() - dom.max) <= eps) params.pop_back();
+        } else {
+          if (!params.empty() && std::fabs(params.back() - dom.max) <= eps) params.pop_back();
+          if (!params.empty() && std::fabs(params.front() - dom.min) <= eps) params.erase(params.begin());
+        }
+      }
+      for (double t : params) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
+      ++n;
+    }
+    if (n == 0) ctx.Doc().AbandonChange();  // no curve selected: no empty undo step
+    ctx.Print("Divide: " + std::to_string(n) + " curve(s) divided");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  bool by_length_ = false;
+  bool ends_ = true;
+  int count_ = 10;
+  double length_ = 1.0;
+};
+
+// Measure (AutoCAD MEASURE): places point objects along each selected curve at multiples of a given distance, counted from the start of
+// the curve (From=Start, the default) or from its end (From=End): k * d for k = 1, 2, ... while k * d is short of the curve's length. The
+// curve is not cut. The start point itself and the end point are not marked. (The Block option is not provided.)
+class MeasureCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to measure"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"From", from_end_ ? "End" : "Start", {"Start", "End"}, false, false}};
+    WantNumber("Length of segment", length_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "From") return;
+    from_end_ = (v == "End");
+    options[0].value = from_end_ ? "End" : "Start";
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e = nullptr;
+    const double v = std::strtod(t.c_str(), &e);
+    if (e && e != t.c_str() && !*e) OnNumber(ctx, v);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Measure: the segment length must be a positive number"); return; }
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+      const double segs = o->curve->Length(200) / v;
+      if (!(segs <= kMaxCreatedItems)) {
+        ctx.Warn("Measure: a segment length of " + FormatNumber(v) + " would make about " + FormatNumber(std::floor(segs)) + " points on curve " +
+                 std::to_string(id) + " (limit " + FormatNumber(kMaxCreatedItems) + "); give a longer segment length");
+        return;
+      }
+    }
+    length_ = v;
+    ctx.Doc().BeginChange("Measure");
+    int curves = 0, placed = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+      const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
+      const double total = curve.LengthToTolerance(1e-9);
+      for (int k = 1; static_cast<double>(k) * v < total * (1.0 - 1e-12); ++k) {
+        const double s = from_end_ ? total - static_cast<double>(k) * v : static_cast<double>(k) * v;
+        ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(curve.ParameterAtArcLength(s, 1e-9))));
+        ++placed;
+      }
+      ++curves;
+    }
+    if (curves == 0) ctx.Doc().AbandonChange();
+    ctx.Print("Measure: " + std::to_string(placed) + " point(s) placed on " + std::to_string(curves) + " curve(s)");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  bool from_end_ = false;
+  double length_ = 10.0;
+};
+
+// PType (AutoCAD PTYPE / PDMODE and PDSIZE): sets the point display style and size stored in the document (and written to the file:
+// $PDMODE / $PDSIZE in DXF). Style is the PDMODE code: 0 dot, 1 nothing, 2 plus, 3 cross, 4 tick, and 32 added for a circle around it,
+// 64 for a square, 96 for both (so 35 is a cross in a circle). Size is PDSIZE: 0 = 5% of the viewport height, a positive number is an
+// absolute size in model units, a negative number is a percentage of the viewport height. Only the stored values are provided here;
+// the viewports still draw points as before.
+class PTypeCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    options = {{"Style", std::to_string(ctx.Settings().point_style), {}, true, false},
+               {"Size", FormatNumber(ctx.Settings().point_size), {}, true, false}};
+    WantEnter("Set Style= and Size=, then press Enter");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    char* e = nullptr;
+    const double x = std::strtod(v.c_str(), &e);
+    if (!e || e == v.c_str() || *e || !std::isfinite(x)) { ctx.Warn("PType: '" + v + "' is not a number"); return; }
+    if (n == "Style") {
+      const int m = static_cast<int>(std::lround(x));
+      const int base = m % 32, ring = m - base;
+      if (std::fabs(x - m) > 1e-9 || base < 0 || base > 4 || (ring != 0 && ring != 32 && ring != 64 && ring != 96)) {
+        ctx.Warn("PType: the style must be 0-4, optionally plus 32 (circle), 64 (square) or 96 (both): '" + v + "' ignored");
+        return;
+      }
+      ctx.Settings().point_style = m;
+      options[0].value = std::to_string(m);
+    } else if (n == "Size") {
+      ctx.Settings().point_size = x;
+      options[1].value = FormatNumber(x);
+    }
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.Print("PType: PDMODE = " + std::to_string(ctx.Settings().point_style) + ", PDSIZE = " + FormatNumber(ctx.Settings().point_size));
+    Finish();
+  }
+};
+
+// PointGrid: two corner picks define a rectangular grid of point objects,
+// with CountX/CountY options (same OptionSpec convention as PolygonCommand's
+// NumSides and HelixCommand's Turns/Pitch) letting the user size the grid
+// instead of the fixed 5 x 5 it used to always place. Each count must be at
+// least 2 (a "grid" of 1 is just a single point/line, and the row/column
+// spacing math below divides by count-1).
+class PointGridCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    WantPoint("First corner of grid");
+    options = {{"CountX", std::to_string(count_x_), {}, true, false}, {"CountY", std::to_string(count_y_), {}, true, false}};
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    // 100000 x 100000 points used to be accepted here and then built (the hover preview built them on every mouse move).
+    int k = std::atoi(v.c_str());
+    if ((n == "CountX" || n == "CountY") && (k < 2 || k > 1000)) {
+      ctx.Warn("PointGrid: " + n + " must be a whole number from 2 to 1000, '" + v + "' ignored");
+      return;
+    }
+    if (n == "CountX") { count_x_ = k; options[0].value = std::to_string(count_x_); }
+    else if (n == "CountY") { count_y_ = k; options[1].value = std::to_string(count_y_); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+    if (pts_.size() < 2) { WantPoint("Other corner"); return; }
+    ctx.ClearPreview();
+    Build(ctx, pts_[0], pts_[1]);
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    for (const Point3d& gp : GridPoints(pts_[0], h)) ctx.AddPreviewPoint(gp);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  std::vector<Point3d> GridPoints(Point3d a, Point3d b) const {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < count_x_; ++i)
+      for (int j = 0; j < count_y_; ++j)
+        pts.push_back(Point3d(a.x + (b.x - a.x) * i / (count_x_ - 1), a.y + (b.y - a.y) * j / (count_y_ - 1), a.z));
+    return pts;
+  }
+  void Build(CommandContext& ctx, Point3d a, Point3d b) {
+    ctx.Doc().BeginChange("PointGrid");
+    for (const Point3d& gp : GridPoints(a, b)) ctx.Doc().Add(SceneObject::MakePoint(gp));
+    ctx.Print("PointGrid: " + std::to_string(count_x_) + " x " + std::to_string(count_y_) + " grid of points");
+  }
+  std::vector<Point3d> pts_;
+  int count_x_ = 5;
+  int count_y_ = 5;
+};
+
+// Helix / spiral with Turns and Radius options.
+class HelixCommand : public Command {
+ public:
+  explicit HelixCommand(bool spiral) : spiral_(spiral) {}
+  void Begin(CommandContext&) override {
+    WantPoint("Start of axis");
+    options = {{"Turns", FormatNumber(turns_), {}, true, false}, {"Pitch", "", {}, true, false}};
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n == "Turns") {
+      double t = std::atof(v.c_str());
+      if (std::isfinite(t) && t > 0 && t <= kMaxTurns) turns_ = t;
+      else ctx.Warn("Helix: Turns must be a number above 0 and at most " + FormatNumber(kMaxTurns) + ", '" + v + "' ignored");
+      options[0].value = FormatNumber(turns_);
+    }
+    if (n == "Pitch") {
+      double p = std::atof(v.c_str());
+      if (std::isfinite(p) && p > 0) pitch_ = p;
+      else ctx.Warn("Helix: Pitch must be a positive number, '" + v + "' ignored");
+    }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    pts_.push_back(p);
+    if (pts_.size() == 1) { WantPoint("End of axis"); return; }
+    if (pts_.size() == 2) { WantPoint(spiral_ ? "First radius" : "Radius"); return; }
+    if (spiral_ && pts_.size() == 3) { WantPoint("Second radius"); return; }
+    // The FIRST radius (pts_[2]) is measured from the axis START (pts_[0]) -
+    // the base of the helix/spiral, where the circle this command actually
+    // draws is centered (both the exact kernel construction below and the
+    // old sampled fallback build their plane at pts_[0], never pts_[1]).
+    // The SECOND radius (pts_[3], spiral only) is measured from the axis
+    // END (pts_[1]) instead - the natural near reference for a point picked
+    // close to the narrow/top end of a cone. Mixing these up (an earlier
+    // version of this command measured BOTH from pts_[1]) is invisible with
+    // the old approximate, sampled-as-control-points construction, but
+    // produces a visibly, measurably wrong radius once the curve is built
+    // exactly - caught here by end-to-end verification against the real
+    // app, not assumed correct from the formula alone.
+    Build(ctx, pts_.size() == 4 ? (pts_[3] - pts_[1]).Length() : (pts_[2] - pts_[0]).Length() * (spiral_ ? 0.2 : 1.0));
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e; double v = std::strtod(t.c_str(), &e);
+    if (e && !*e && pts_.size() >= 2) {
+      if (pts_.size() == 2) { pts_.push_back(pts_[0] + Vector3d(v, 0, 0)); if (spiral_) { WantPoint("Second radius"); return; } Build(ctx, v); }
+      else Build(ctx, v);
+    }
+  }
+  void Build(CommandContext& ctx, double r2) {
+    ctx.ClearPreview();
+    Vector3d axis = pts_[1] - pts_[0];
+    const double h = axis.Length();
+    const double r1 = (pts_[2] - pts_[0]).Length();
+    if (h <= 0 || r1 <= 0) { ctx.Warn("Axis and radius must be non-zero"); Finish(); return; }
+    double turns = turns_;
+    if (pitch_ > 0) turns = h / pitch_;
+    // Pitch 1e-9 on a 10 unit axis is 1e10 turns; the exact search and the sampled fallback both scale with it.
+    if (!std::isfinite(turns) || turns > kMaxTurns) {
+      ctx.Warn("Helix: this Pitch/Turns makes " + FormatNumber(turns) + " turns (limit " + FormatNumber(kMaxTurns) + "); give a larger Pitch or fewer Turns");
+      Finish();
+      return;
+    }
+
+    // Exact construction first: NurbsCurve::Helix() genuinely interpolates
+    // the real analytic helix/spiral (tolerance-bounded, since no exact
+    // rational form exists), unlike the old fallback below, which hands
+    // sampled points straight to FromControlPoints() - a B-spline does
+    // not pass through its own control points in general, so that was
+    // neither exact nor even reliably close. Falls through to the old
+    // approximation only if the kernel's own tolerance search can't meet
+    // the document's absolute tolerance (e.g. an unreasonable turns count).
+    kernel::NurbsCurve curve;
+    double deviation = -1.0;
+    if (kernel::NurbsCurve::Helix(pts_[0], pts_[1], r1, r2, turns, ctx.Settings().absolute_tolerance, curve,
+                                   &deviation) == kernel::Result::Ok) {
+      AddCurve(ctx, curve, spiral_ ? "Spiral" : "Helix");
+      ctx.Print((spiral_ ? std::string("Spiral") : std::string("Helix")) +
+                ": exact interpolation (deviation " + FormatNumber(deviation) + ")");
+      Finish();
+      return;
+    }
+
+    axis.Unitize();
+    ON_Plane pl(pts_[0], axis);
+    const int per = 24;
+    const int n = std::max(8, static_cast<int>(turns * per));
+    std::vector<Point3d> pts;
+    for (int i = 0; i <= n; ++i) {
+      const double t = static_cast<double>(i) / n;
+      const double a = 2 * ON_PI * turns * t;
+      const double rr = r1 + (r2 - r1) * t;
+      pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)) + axis * (h * t));
+    }
+    AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, 3), spiral_ ? "Spiral" : "Helix");
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(pts_.back(), h);
+    if (pts_.size() >= 2) {
+      // Preview the circle around whichever endpoint the radius being
+      // picked right now is actually measured from (pts_[0] for the
+      // first/only radius, pts_[1] for the spiral's own second radius) -
+      // matching Build()'s own reference points exactly, see OnPoint()'s
+      // own comment for why.
+      const Point3d center = pts_.size() == 2 ? pts_[0] : pts_[1];
+      ctx.AddPreviewPolyline(CirclePoints(ON_Circle(ON_Plane(center, pts_[1] - pts_[0]), (h - center).Length())));
+    }
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool spiral_;
+  double turns_ = 5, pitch_ = 0;
+  std::vector<Point3d> pts_;
+};
+
+// Sketch: a real continuous mouse-drag capture (Want::Drag - see Command.h
+// and CommandEngine::FeedDragPolyline/FeedText's Want::Drag case), not
+// click-by-click points. The real-mouse path (Viewport.cpp) samples the
+// cursor every few pixels of movement from button-down to button-up and
+// hands the whole polyline back in one call; the scripted path
+// (tests/*.txt, --script) feeds the same command one sample per typed
+// point token, ended by Enter. Either way OnDragSample() accumulates
+// samples (dropping any closer than kMinSampleSpacing world units to the
+// last accepted one - a drag reports far more samples than a hand-drawn
+// curve needs control points for) and OnDragEnd() fits one interpolated
+// NURBS curve through what's left via the exact same InterpolatedNurbs()
+// helper InterpCrv/CurveThroughPt already use below (that helper's own
+// comment calls it "global cubic"; CreateClampedUniformNurbs is actually
+// called with order=3, i.e. degree 2/quadratic, not degree 3 - a pre-
+// existing discrepancy in that comment, not something this pass changed or
+// relies on being cubic for): real Rhino's own Sketch help says only that it
+// "draws a curve by dragging the mouse", and an interpolated curve through
+// the (decimated) samples is the more useful, less control-point-bloated
+// reading of that - a literal one-segment-per-sample polyline would be
+// needlessly dense and is not what a "sketch" reads as.
+class SketchCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    WantDrag("Click and drag to sketch a curve; release the mouse button to finish");
+    options = {{"Closed", "No", {"Yes", "No"}, false, true}, {"Undo", "", {}, false, false}};
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    if (name == "Closed") { closed_ = (ToLower(value) == "yes"); options[0].value = closed_ ? "Yes" : "No"; }
+    else if (name == "Undo" && !pts_.empty()) pts_.pop_back();
+  }
+  void OnDragSample(CommandContext& ctx, Point3d p) override {
+    if (!pts_.empty() && (p - pts_.back()).Length() < kMinSampleSpacing) return;
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+  }
+  void OnDragEnd(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = pts_;
+    if (closed_ && pts.size() >= 3 && (pts.front() - pts.back()).Length() > kMinSampleSpacing) pts.push_back(pts.front());
+    if (pts.size() == 2) {
+      AddCurve(ctx, PolylineCurve(pts), "Sketch");
+    } else if (pts.size() >= 3) {
+      kernel::NurbsCurve k;
+      if (InterpolatedNurbs(pts, k)) {
+        AddCurve(ctx, k, "Sketch");
+        ctx.Print("Sketch: interpolated a curve through " + std::to_string(pts.size()) + " drag sample(s)" +
+                  (closed_ ? " (closed)" : ""));
+      }
+    } else if (!pts.empty()) {
+      ctx.Warn("Sketch: drag too short to make a curve (need at least 2 sampled points)");
+    }
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    std::vector<Point3d> pv = pts_;
+    pv.push_back(h);
+    ctx.AddPreviewPolyline(pv);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  // Minimum world-space distance between two accepted samples: a genuine
+  // decimation of the raw drag/scripted samples (matching the fit-tolerance
+  // simplification real digitising/sketch tools apply) before the
+  // interpolation, not just a zero-length-segment guard.
+  static constexpr double kMinSampleSpacing = 0.05;
+  std::vector<Point3d> pts_;
+  bool closed_ = false;
+};
+
+}  // namespace
+
+void RegisterCreateCommands(CommandEngine& e) {
+  Reg(e, "Point", Make<PointsCommand>(std::vector<std::string>{"Location of point object"},
+                                      [](CommandContext& ctx, const std::vector<Point3d>& p) { AddObject(ctx, SceneObject::MakePoint(p[0]), "Point"); }));
+  Reg(e, "Points", Make<PointsCommandMany>());
+  Reg(e, "Line", Make<PointsCommand>(std::vector<std::string>{"Start of line", "End of line"},
+                                     [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                       if (p[0].DistanceTo(p[1]) <= 1e-12) { ctx.Warn("Line: the start and end points are the same, no line created"); return; }
+                                       AddCurve(ctx, PolylineCurve(p), "Line");
+                                     },
+                                     [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) { ctx.AddPreviewLine(p[0], h); }));
+  Reg(e, "Lines", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Lines));
+  Reg(e, "Polyline", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Polyline));
+  Reg(e, "Curve", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::ControlPoint));
+  Reg(e, "InterpCrv", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated));
+  Reg(e, "CurveThroughPt", Make<CurveThroughPtCommand>(), CommandStatus::Implemented,
+      "Interpolates a curve through the selected point objects (ordered by object id), via the same global cubic "
+      "interpolation as InterpCrv.");
+  // Real continuous mouse-drag capture: see SketchCommand above,
+  // Want::Drag/OnDragSample/OnDragEnd in Command.h, CommandEngine's
+  // FeedDragPolyline (real mouse) and Want::Drag case in FeedText
+  // (scripted), and Viewport.cpp's drag_capturing_/drag_capture_pts_
+  // (button-down -> throttled mousemove samples -> button-up).
+  Reg(e, "Sketch", Make<SketchCommand>(), CommandStatus::Implemented,
+      "Real continuous mouse-drag capture: click and hold, drag the cursor to draw the curve, release to finish "
+      "(Closed option: close it when you release). The drag is sampled every few pixels of movement and fit with "
+      "one global interpolated NURBS curve through the (decimated) samples, same technique (InterpolatedNurbs(), "
+      "degree 2) as InterpCrv/CurveThroughPt. "
+      "Scripted/tested the same way other point-prompting commands are, via a sequence of point tokens ending in "
+      "Enter, standing in for the sampled drag positions.");
+  Reg(e, "Circle", Make<CircleCommand>());
+  Reg(e, "Circle3Pt", Make<PointsCommand>(std::vector<std::string>{"First point on circle", "Second point on circle", "Third point on circle"},
+                                          [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                            ON_Circle c;
+                                            if (c.Create(p[0], p[1], p[2])) AddCircle(ctx, c, "Circle3Pt");
+                                            else ctx.Warn("Points are collinear");
+                                          },
+                                          [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                            if (p.size() == 1) ctx.AddPreviewLine(p[0], h);
+                                            else { ON_Circle c; if (c.Create(p[0], p[1], h)) PreviewCircle(ctx, c); }
+                                          }));
+  Reg(e, "CircleD", Make<PointsCommand>(std::vector<std::string>{"Start of diameter", "End of diameter"},
+                                        [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                          ON_Plane pl = ActivePlane(ctx);
+                                          pl.SetOrigin((p[0] + p[1]) / 2.0);
+                                          AddCircle(ctx, ON_Circle(pl, (p[1] - p[0]).Length() / 2), "CircleD");
+                                        },
+                                        [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                          ON_Plane pl = ActivePlane(ctx); pl.SetOrigin((p[0] + h) / 2.0);
+                                          PreviewCircle(ctx, ON_Circle(pl, (h - p[0]).Length() / 2));
+                                        }));
+  Reg(e, "Arc", Make<PointsCommand>(std::vector<std::string>{"Center of arc", "Start of arc", "End of arc"},
+                                    [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                      ON_Plane pl = ActivePlane(ctx);
+                                      pl.SetOrigin(p[0]);
+                                      double r = (p[1] - p[0]).Length();
+                                      if (!(r > 0)) { ctx.Warn("Arc: the start of the arc is on its center, so the radius is zero"); return; }
+                                      double a0 = std::atan2(ON_DotProduct(p[1] - p[0], pl.yaxis), ON_DotProduct(p[1] - p[0], pl.xaxis));
+                                      double a1 = std::atan2(ON_DotProduct(p[2] - p[0], pl.yaxis), ON_DotProduct(p[2] - p[0], pl.xaxis));
+                                      if (a1 <= a0) a1 += 2 * ON_PI;
+                                      ON_Arc arc(ON_Circle(pl, r), ON_Interval(a0, a1));
+                                      ON_ArcCurve ac(arc);
+                                      kernel::NurbsCurve k;
+                                      if (CurveFromON(ac, k)) AddCurve(ctx, k, "Arc");
+                                    },
+                                    [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                      if (p.size() == 1) { ctx.AddPreviewLine(p[0], h); return; }
+                                      ON_Plane pl = ActivePlane(ctx); pl.SetOrigin(p[0]);
+                                      double r = (p[1] - p[0]).Length();
+                                      double a0 = std::atan2(ON_DotProduct(p[1] - p[0], pl.yaxis), ON_DotProduct(p[1] - p[0], pl.xaxis));
+                                      double a1 = std::atan2(ON_DotProduct(h - p[0], pl.yaxis), ON_DotProduct(h - p[0], pl.xaxis));
+                                      if (a1 <= a0) a1 += 2 * ON_PI;
+                                      std::vector<Point3d> pts;
+                                      for (int i = 0; i <= 48; ++i) pts.push_back(ON_Circle(pl, r).PointAt(a0 + (a1 - a0) * i / 48.0));
+                                      ctx.AddPreviewPolyline(pts);
+                                      ctx.AddPreviewLine(p[0], h);
+                                    }));
+  Reg(e, "Arc3Pt", Make<PointsCommand>(std::vector<std::string>{"Start of arc", "End of arc", "Point on arc"},
+                                       [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                         ON_Arc arc(p[0], p[2], p[1]);
+                                         if (!arc.IsValid()) { ctx.Warn("Points are collinear"); return; }
+                                         ON_ArcCurve ac(arc);
+                                         kernel::NurbsCurve k;
+                                         if (CurveFromON(ac, k)) AddCurve(ctx, k, "Arc3Pt");
+                                       },
+                                       [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                         if (p.size() == 1) { ctx.AddPreviewLine(p[0], h); return; }
+                                         ON_Arc arc(p[0], h, p[1]);
+                                         if (!arc.IsValid()) return;
+                                         std::vector<Point3d> pts;
+                                         for (int i = 0; i <= 48; ++i) pts.push_back(arc.PointAt(arc.DomainRadians().ParameterAt(i / 48.0)));
+                                         ctx.AddPreviewPolyline(pts);
+                                       }));
+  Reg(e, "Rectangle", Make<PointsCommand>(std::vector<std::string>{"First corner of rectangle", "Other corner"},
+                                          [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                            ON_Plane pl = ActivePlane(ctx);
+                                            double u0, v0, u1, v1;
+                                            pl.ClosestPointTo(p[0], &u0, &v0);
+                                            pl.ClosestPointTo(p[1], &u1, &v1);
+                                            std::vector<Point3d> pts = {pl.PointAt(u0, v0), pl.PointAt(u1, v0), pl.PointAt(u1, v1), pl.PointAt(u0, v1), pl.PointAt(u0, v0)};
+                                            AddCurve(ctx, PolylineCurve(pts), "Rectangle");
+                                          },
+                                          [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                            ON_Plane pl = ActivePlane(ctx);
+                                            double u0, v0, u1, v1;
+                                            pl.ClosestPointTo(p[0], &u0, &v0);
+                                            pl.ClosestPointTo(h, &u1, &v1);
+                                            ctx.AddPreviewPolyline({pl.PointAt(u0, v0), pl.PointAt(u1, v0), pl.PointAt(u1, v1), pl.PointAt(u0, v1)}, true);
+                                          }));
+  Reg(e, "Rectangle3Pt", Make<PointsCommand>(std::vector<std::string>{"Start of edge", "End of edge", "Width"},
+                                             [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                               Vector3d e1 = p[1] - p[0];
+                                               Vector3d n = ActiveNormal(ctx);
+                                               Vector3d e2 = ON_CrossProduct(n, e1);
+                                               e2.Unitize();
+                                               double w = ON_DotProduct(p[2] - p[1], e2);
+                                               e2 *= w;
+                                               AddCurve(ctx, PolylineCurve({p[0], p[1], p[1] + e2, p[0] + e2, p[0]}), "Rectangle3Pt");
+                                             },
+                                             [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                               if (p.size() == 1) { ctx.AddPreviewLine(p[0], h); return; }
+                                               Vector3d e1 = p[1] - p[0]; Vector3d e2 = ON_CrossProduct(ActiveNormal(ctx), e1); e2.Unitize();
+                                               e2 *= ON_DotProduct(h - p[1], e2);
+                                               ctx.AddPreviewPolyline({p[0], p[1], p[1] + e2, p[0] + e2}, true);
+                                             }));
+  Reg(e, "Polygon", Make<PolygonCommand>(false));
+  Reg(e, "PolygonStar", Make<PolygonCommand>(true));
+  Reg(e, "Ellipse", Make<PointsCommand>(std::vector<std::string>{"Ellipse center", "End of first axis", "End of second axis"},
+                                        [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                          ON_Plane pl = ActivePlane(ctx);
+                                          pl.SetOrigin(p[0]);
+                                          Vector3d x = p[1] - p[0];
+                                          double a = x.Length();
+                                          if (!(a > 0)) { ctx.Warn("Ellipse: the end of the first axis is on the center"); return; }
+                                          x.Unitize();
+                                          Vector3d y = ON_CrossProduct(pl.zaxis, x);
+                                          double b = std::fabs(ON_DotProduct(p[2] - p[0], y));
+                                          if (!(b > 0)) { ctx.Warn("Ellipse: the second axis has no length (the point is on the first axis)"); return; }
+                                          ON_Plane epl(p[0], x, y);
+                                          ON_Ellipse el(epl, a, b);
+                                          ON_NurbsCurve nc;
+                                          if (el.GetNurbForm(nc)) { kernel::NurbsCurve k; k.raw() = nc; AddCurve(ctx, k, "Ellipse"); }
+                                        },
+                                        [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                          if (p.size() == 1) { ctx.AddPreviewLine(p[0], h); return; }
+                                          ON_Plane pl = ActivePlane(ctx);
+                                          Vector3d x = p[1] - p[0]; double a = x.Length(); if (a <= 0) return; x.Unitize();
+                                          Vector3d y = ON_CrossProduct(pl.zaxis, x);
+                                          double b = std::fabs(ON_DotProduct(h - p[0], y));
+                                          std::vector<Point3d> pts;
+                                          for (int i = 0; i < 64; ++i) { double t = 2 * ON_PI * i / 64; pts.push_back(p[0] + x * (a * std::cos(t)) + y * (b * std::sin(t))); }
+                                          ctx.AddPreviewPolyline(pts, true);
+                                        }));
+  Reg(e, "Helix", Make<HelixCommand>(false));
+  Reg(e, "Spiral", Make<HelixCommand>(true));
+  Reg(e, "PointGrid", Make<PointGridCommand>(),
+      CommandStatus::Implemented, "Rectangular grid of point objects between two picked corners; CountX/CountY options set the grid size (default 5 x 5).");
+  Reg(e, "PType", Make<PTypeCommand>(), CommandStatus::Implemented,
+      "Style= sets the point display style (PDMODE: 0-4, plus 32 circle / 64 square / 96 both) and Size= the size (PDSIZE: 0 = 5% of the viewport, positive absolute, negative percent); stored in the document and the DXF header. Viewports do not yet draw the style.");
+  Reg(e, "Divide", Make<DivideCommand>(), CommandStatus::Implemented,
+      "Places point objects along each selected curve; Mode=NumberOfSegments (default) divides by a fixed "
+      "segment count, Mode=SegmentLength by a fixed segment length; Ends=No leaves out the two end points (AutoCAD DIVIDE).");
+  Reg(e, "Measure", Make<MeasureCommand>(), CommandStatus::Implemented,
+      "Places point objects along each selected curve at multiples of a distance from its start (From=End: from its end); the curve is not cut.");
+  Reg(e, "ClosestPt", Make<PointsCommand>(std::vector<std::string>{"Point to test"},
+                                          [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                            double best = 1e300; Point3d bp = p[0];
+                                            for (const SceneObject& o : ctx.Doc().Objects()) {
+                                              if (!o.selected) continue;
+                                              Point3d cp = p[0];
+                                              if (o.kind == ObjectKind::Curve) cp = o.curve->ClosestPoint(p[0]);
+                                              else if (o.kind == ObjectKind::Surface) cp = o.surface->ClosestPoint(p[0]);
+                                              else if (o.kind == ObjectKind::Mesh) cp = o.mesh->ClosestPoint(p[0]);
+                                              else if (o.kind == ObjectKind::Point) cp = o.point;
+                                              else continue;
+                                              double d = (cp - p[0]).Length();
+                                              if (d < best) { best = d; bp = cp; }
+                                            }
+                                            if (best < 1e299) { AddObject(ctx, SceneObject::MakePoint(bp), "ClosestPt"); ctx.Print("Closest point " + FormatPoint(bp) + " distance " + FormatNumber(best)); }
+                                            else ctx.Warn("Select curves, surfaces, meshes or points first");
+                                          }));
+  Reg(e, "Plane", Make<PointsCommand>(std::vector<std::string>{"First corner of plane", "Other corner"},
+                                      [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                        ON_Plane pl = ActivePlane(ctx);
+                                        double u0, v0, u1, v1;
+                                        pl.ClosestPointTo(p[0], &u0, &v0);
+                                        pl.ClosestPointTo(p[1], &u1, &v1);
+                                        std::vector<Point3d> grid = {pl.PointAt(u0, v0), pl.PointAt(u1, v0), pl.PointAt(u0, v1), pl.PointAt(u1, v1)};
+                                        AddObject(ctx, SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)), "Plane");
+                                      },
+                                      [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
+                                        ON_Plane pl = ActivePlane(ctx); double u0, v0, u1, v1;
+                                        pl.ClosestPointTo(p[0], &u0, &v0); pl.ClosestPointTo(h, &u1, &v1);
+                                        ctx.AddPreviewPolyline({pl.PointAt(u0, v0), pl.PointAt(u1, v0), pl.PointAt(u1, v1), pl.PointAt(u0, v1)}, true);
+                                      }));
+  Reg(e, "Plane3Pt", Make<PointsCommand>(std::vector<std::string>{"Start of edge", "End of edge", "Width"},
+                                         [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                           Vector3d e1 = p[1] - p[0];
+                                           Vector3d e2 = p[2] - p[1];
+                                           std::vector<Point3d> grid = {p[0], p[1], p[0] + e2, p[1] + e2};
+                                           AddObject(ctx, SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)), "Plane3Pt");
+                                         }));
+  Reg(e, "SrfPt", Make<PointsCommand>(std::vector<std::string>{"First corner", "Second corner", "Third corner", "Fourth corner"},
+                                      [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                        std::vector<Point3d> grid = {p[0], p[1], p[3], p[2]};
+                                        AddObject(ctx, SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)), "SrfPt");
+                                      },
+                                      [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) { std::vector<Point3d> pv = p; pv.push_back(h); ctx.AddPreviewPolyline(pv, pv.size() > 2); }));
+}
+
+}  // namespace dino8::app

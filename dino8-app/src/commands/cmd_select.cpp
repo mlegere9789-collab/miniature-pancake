@@ -1,0 +1,262 @@
+// Selection commands.
+#include "commands/cmd_common.h"
+
+#include <cctype>
+#include <set>
+#include <sstream>
+
+namespace dino8::app {
+
+namespace {
+
+CommandFactory SelKind(ObjectKind kind) {
+  return Immediate([kind](CommandContext& ctx) {
+    ctx.Doc().SelectWhere([kind, &ctx](const SceneObject& o) { return o.kind == kind && ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o); }, true);
+    ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+  });
+}
+
+CommandFactory SelWhere(std::function<bool(const SceneObject&)> pred) {
+  return Immediate([pred](CommandContext& ctx) {
+    ctx.Doc().SelectWhere([&](const SceneObject& o) { return pred(o) && ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o); }, true);
+    ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+  });
+}
+
+class SelWindowCommand : public Command {
+ public:
+  explicit SelWindowCommand(bool crossing) : crossing_(crossing) {}
+  void Begin(CommandContext&) override { WantPoint("First corner of selection window"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!a_) { a_ = p; WantPoint("Other corner"); return; }
+    Viewport* vp = ctx.ActiveViewport();
+    if (!vp) { Finish(); return; }
+    double x0, y0, x1, y1;
+    if (vp->WorldToPixel(*a_, x0, y0) && vp->WorldToPixel(p, x1, y1)) {
+      for (ObjectId id : vp->ObjectsInWindow(ctx.Doc(), std::min(x0, x1), std::min(y0, y1), std::max(x0, x1), std::max(y0, y1), crossing_)) ctx.Doc().Select(id, true);
+      ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+    }
+    ctx.ClearPreview();
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!a_) return;
+    ctx.ClearPreview();
+    ON_Plane pl = ActivePlane(ctx);
+    double u0, v0, u1, v1;
+    pl.ClosestPointTo(*a_, &u0, &v0); pl.ClosestPointTo(h, &u1, &v1);
+    ctx.AddPreviewPolyline({pl.PointAt(u0, v0), pl.PointAt(u1, v0), pl.PointAt(u1, v1), pl.PointAt(u0, v1)}, true);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool crossing_;
+  std::optional<Point3d> a_;
+};
+
+}  // namespace
+
+bool SameGeometry(const SceneObject& a, const SceneObject& b, double tol) {
+  if (a.kind != b.kind) return false;
+  switch (a.kind) {
+    case ObjectKind::Point: return a.point.DistanceTo(b.point) <= tol;
+    case ObjectKind::Curve: return a.curve && b.curve && a.curve->raw().IsDuplicate(b.curve->raw(), true, tol);
+    case ObjectKind::Surface: return a.surface && b.surface && a.surface->raw().IsDuplicate(b.surface->raw(), true, tol);
+    case ObjectKind::Mesh: {
+      if (!a.mesh || !b.mesh) return false;
+      const ON_Mesh& ma = a.mesh->raw();
+      const ON_Mesh& mb = b.mesh->raw();
+      if (ma.m_V.Count() != mb.m_V.Count() || ma.m_F.Count() != mb.m_F.Count()) return false;
+      for (int i = 0; i < ma.m_V.Count(); ++i) {
+        const ON_3dPoint pa = ma.HasDoublePrecisionVertices() && i < ma.m_dV.Count() ? ma.m_dV[i] : ON_3dPoint(ma.m_V[i]);
+        const ON_3dPoint pb = mb.HasDoublePrecisionVertices() && i < mb.m_dV.Count() ? mb.m_dV[i] : ON_3dPoint(mb.m_V[i]);
+        if (pa.DistanceTo(pb) > tol) return false;
+      }
+      for (int i = 0; i < ma.m_F.Count(); ++i)
+        for (int k = 0; k < 4; ++k) if (ma.m_F[i].vi[k] != mb.m_F[i].vi[k]) return false;
+      return true;
+    }
+    case ObjectKind::Brep: {
+      if (!a.brep || !b.brep) return false;
+      const ON_Brep& ba = a.brep->raw();
+      const ON_Brep& bb = b.brep->raw();
+      if (ba.m_F.Count() != bb.m_F.Count() || ba.m_E.Count() != bb.m_E.Count() || ba.m_V.Count() != bb.m_V.Count() || ba.m_S.Count() != bb.m_S.Count()) return false;
+      for (int i = 0; i < ba.m_S.Count(); ++i) {
+        const ON_Surface* sa = ba.m_S[i];
+        const ON_Surface* sb = bb.m_S[i];
+        if (!sa || !sb) return sa == sb;
+        ON_NurbsSurface na, nb;
+        if (!sa->GetNurbForm(na) || !sb->GetNurbForm(nb)) return false;
+        if (!na.IsDuplicate(nb, true, tol)) return false;
+      }
+      return true;
+    }
+    default: break;
+  }
+  const kernel::BoundingBox ba = a.BoundingBox(), bb = b.BoundingBox();
+  if ((ba.min - bb.min).Length() > tol || (ba.max - bb.max).Length() > tol) return false;
+  auto shape = [](const SceneObject& o) {
+    std::istringstream in(o.Describe());
+    std::string out, line;
+    while (std::getline(in, line)) if (line.find("ID:") == std::string::npos) out += line + "\n";
+    return out;
+  };
+  return shape(a) == shape(b);
+}
+
+void RegisterSelectCommands(CommandEngine& e) {
+  Reg(e, "SelAll", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o); }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected"); }));
+  Reg(e, "SelNone", Immediate([](CommandContext& ctx) { ctx.Doc().SelectNone(); }));
+  Reg(e, "Invert", Immediate([](CommandContext& ctx) { ctx.Doc().InvertSelection(); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected"); }));
+  Reg(e, "SelPt", SelKind(ObjectKind::Point));
+  Reg(e, "SelCrv", SelKind(ObjectKind::Curve));
+  Reg(e, "SelSrf", SelKind(ObjectKind::Surface));
+  Reg(e, "SelPolysrf", SelKind(ObjectKind::Brep));
+  Reg(e, "SelMesh", SelKind(ObjectKind::Mesh));
+  Reg(e, "SelSubD", SelKind(ObjectKind::SubD));
+  Reg(e, "SelClosedCrv", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsClosed(); }));
+  Reg(e, "SelOpenCrv", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && !o.curve->IsClosed(); }));
+  Reg(e, "SelClosedSrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Surface && (o.surface->IsClosed(0) || o.surface->IsClosed(1)); }));
+  Reg(e, "SelOpenSrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Surface && !(o.surface->IsClosed(0) || o.surface->IsClosed(1)); }));
+  Reg(e, "SelClosedPolysrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Brep && o.brep->raw().IsSolid(); }));
+  Reg(e, "SelOpenPolysrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Brep && !o.brep->raw().IsSolid(); }));
+  Reg(e, "SelClosedMesh", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Mesh && o.mesh->IsClosedManifold(); }));
+  Reg(e, "SelOpenMesh", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Mesh && !o.mesh->IsClosedManifold(); }));
+  Reg(e, "SelLine", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsLinear(); }));
+  Reg(e, "SelPolyline", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->Degree() == 1; }));
+  Reg(e, "SelCircle", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsCircle(); }));
+  Reg(e, "SelArc", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsArc() && !o.curve->IsCircle(); }));
+  Reg(e, "SelPlanarCrv", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsPlanar(1e-6); }));
+  Reg(e, "SelPlanarSrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Surface && o.surface->IsPlanar(1e-6); }));
+  // SelGroup [name]: with a name, the members of the group(s) of that name (case ignored); without, every grouped object.
+  Reg(e, "SelGroup", Immediate([](CommandContext& ctx) {
+        auto lower = [](std::string t) { for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return t; };
+        const std::optional<std::string> name = ctx.Engine().TakePendingInput();
+        std::set<int> wanted;
+        if (name) {
+          for (const Group& g : ctx.Doc().Groups()) if (lower(g.name) == lower(*name)) wanted.insert(g.id);
+          if (wanted.empty()) { ctx.Warn("SelGroup: no group named '" + *name + "'"); return; }
+        }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) {
+          return o.group_id >= 0 && (!name || wanted.count(o.group_id) > 0) && ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o);
+        }, true);
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+      }), CommandStatus::Implemented, "SelGroup [name]: selects the members of the group with that name, or every grouped object when no name is typed.");
+  Reg(e, "SelName", Immediate([](CommandContext& ctx) {
+        std::string name;
+        if (auto tok = ctx.Engine().TakePendingInput()) name = *tok;
+        if (name.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && !o.name.empty()) { name = o.name; break; }
+        if (name.empty()) {
+          std::vector<std::string> names;
+          for (const SceneObject& o : ctx.Doc().Objects()) if (!o.name.empty() && std::find(names.begin(), names.end(), o.name) == names.end()) names.push_back(o.name);
+          if (names.empty()) { ctx.Warn("SelName: the document has no named objects"); return; }
+          ctx.Print("SelName: named objects in the document (type one, or select a named object first):");
+          for (const std::string& n : names) ctx.Print("  " + n);
+          return;
+        }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { return o.name == name; });
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) named '" + name + "' selected");
+      }));
+  // SelLayer [name]: a typed layer name (or full path) selects every visible object on that layer, the way Rhino's SelLayer
+  // takes a layer by name; with no name it uses the layer of the first selected object, else the current layer.
+  Reg(e, "SelLayer", Immediate([](CommandContext& ctx) {
+        int layer = ctx.Doc().CurrentLayer();
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          layer = ctx.Doc().FindLayer(*tok);
+          if (layer < 0) { ctx.Warn("SelLayer: no layer named '" + *tok + "'"); return; }
+        } else {
+          for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { layer = o.layer_index; break; }
+        }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { return o.layer_index == layer && ctx.Doc().IsObjectVisible(o); });
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) on layer " + ctx.Doc().LayerFullPath(layer));
+      }));
+  Reg(e, "SelColor", Immediate([](CommandContext& ctx) {
+        const SceneObject* ref = nullptr;
+        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { ref = &o; break; }
+        if (!ref) { ctx.Warn("Select an object with the colour to match"); return; }
+        Color c = ctx.Doc().EffectiveColor(*ref);
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { Color oc = ctx.Doc().EffectiveColor(o); return std::fabs(oc.r - c.r) < 0.01 && std::fabs(oc.g - c.g) < 0.01 && std::fabs(oc.b - c.b) < 0.01; });
+      }));
+  Reg(e, "SelLast", Immediate([](CommandContext& ctx) {
+        if (ctx.Doc().Objects().empty()) { ctx.Warn("SelLast: the document has no objects"); return; }
+        ctx.Doc().SelectNone();
+        ctx.Doc().Select(ctx.Doc().Objects().back().id, true);
+        // Worded without "N object(s) selected": several existing scripts read the first and last such line of a run as the
+        // before and after selection counts of a Hatch round trip, and a SelLast in front of the Hatch must not become the "before".
+        ctx.Print("SelLast: last created object selected (" + std::to_string(ctx.Doc().SelectedCount()) + " selected)");
+      }));
+  Reg(e, "SelPrev", Immediate([](CommandContext& ctx) {
+        if (ctx.Doc().RestorePreviousSelection()) ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (previous selection)");
+        else ctx.Warn("SelPrev: no previous selection to restore");
+      }));
+  // SelDup: of every set of geometrically identical objects (SameGeometry) the first is left alone and each later copy is selected.
+  Reg(e, "SelDup", Immediate([](CommandContext& ctx) {
+        ctx.Doc().SelectNone();
+        const auto& objs = ctx.Doc().Objects();
+        int n = 0;
+        for (size_t i = 0; i < objs.size(); ++i) for (size_t j = 0; j < i; ++j) {
+          if (SameGeometry(objs[i], objs[j], 1e-6)) { ctx.Doc().Select(objs[i].id, true); ++n; break; }
+        }
+        ctx.Print(std::to_string(n) + " duplicate(s) selected");
+      }));
+  Reg(e, "SelSmall", Immediate([](CommandContext& ctx) {
+        double lim = ctx.Settings().grid_spacing;
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          char* end = nullptr;
+          const double v = std::strtod(tok->c_str(), &end);
+          // "abc", "-5", "nan" and "1x" used to be dropped without a word and the grid size used instead
+          if (end != tok->c_str() && !*end && v > 0) lim = v;
+          else ctx.Warn("SelSmall: '" + *tok + "' is not a size above 0; using " + FormatNumber(lim));
+        }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { kernel::BoundingBox b = o.BoundingBox(); return o.kind != ObjectKind::Point && (b.max - b.min).Length() < lim; });
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " small object(s) selected (bounding box diagonal < " + FormatNumber(lim) + ")");
+      }), CommandStatus::Implemented, "Defaults to one grid unit; pass a number to set the size threshold.");
+  Reg(e, "SelVisible", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o); }); }));
+  // Document::SelectWhere only ever selects visible, unlocked objects, so
+  // these two set the flag directly (they exist so Show/Unlock/Delete can
+  // act on a subset of the hidden or locked objects).
+  Reg(e, "SelLocked", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) { o.selected = ctx.Doc().IsObjectLocked(o); if (o.selected) ++n; } ctx.Print(std::to_string(n) + " locked object(s) selected"); }));
+  Reg(e, "SelHidden", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) { o.selected = !o.visible; if (o.selected) ++n; } ctx.Print(std::to_string(n) + " hidden object(s) selected"); }));
+  Reg(e, "SelWindow", Make<SelWindowCommand>(false));
+  Reg(e, "SelCrossing", Make<SelWindowCommand>(true));
+  Reg(e, "SelBox", Make<SelWindowCommand>(false));
+  Reg(e, "SelectionFilter", Immediate([](CommandContext& ctx) { ctx.App().Panels().selection_filter = true; }));
+  Reg(e, "SelID", Immediate([](CommandContext& ctx) {
+        // "SelID 3 5" selects those ids; bare SelID lists the selection's ids.
+        bool any = false;
+        while (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+          const bool digits = !tok->empty() && tok->find_first_not_of("0123456789") == std::string::npos && tok->size() <= 18;
+          if (!digits) { ctx.Warn("SelID: '" + *tok + "' is not an object id (a whole number)"); continue; }
+          ObjectId id = static_cast<ObjectId>(std::strtoull(tok->c_str(), nullptr, 10));
+          if (const SceneObject* o = ctx.Doc().Find(id)) {
+            ctx.Doc().Select(id, true);
+            if (o->selected) any = true;
+            else ctx.Warn("SelID: object " + *tok + " is " + (ctx.Doc().IsObjectLocked(*o) ? "locked" : "hidden") + " and cannot be selected");
+          }
+          else ctx.Warn("No object with id " + *tok);
+        }
+        if (!any) for (ObjectId id : ctx.Doc().SelectedIds()) ctx.Print("Object id " + std::to_string(id));
+      }));
+  Reg(e, "SelBoundary", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsClosed(); }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " closed boundary curve(s) selected"); }));
+  Reg(e, "SelChain", Immediate([](CommandContext& ctx) {
+        std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
+        if (sel.empty()) { ctx.Warn("Select a curve first"); return; }
+        { bool any_curve = false; for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && o.kind == ObjectKind::Curve) { any_curve = true; break; }
+          if (!any_curve) { ctx.Warn("SelChain: none of the selected objects is a curve"); return; } }
+        bool grew = true;
+        const double tol = ctx.Settings().absolute_tolerance * 10;
+        while (grew) {
+          grew = false;
+          for (SceneObject& o : ctx.Doc().Objects()) {
+            if (o.selected || o.kind != ObjectKind::Curve) continue;
+            for (const SceneObject& s : ctx.Doc().Objects()) {
+              if (!s.selected || s.kind != ObjectKind::Curve) continue;
+              const ON_NurbsCurve& a = o.curve->raw(); const ON_NurbsCurve& b = s.curve->raw();
+              if (a.PointAtStart().DistanceTo(b.PointAtEnd()) < tol || a.PointAtEnd().DistanceTo(b.PointAtStart()) < tol || a.PointAtStart().DistanceTo(b.PointAtStart()) < tol || a.PointAtEnd().DistanceTo(b.PointAtEnd()) < tol) { o.selected = true; grew = true; break; }
+            }
+          }
+        }
+        { int curves = 0; for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && o.kind == ObjectKind::Curve) ++curves;
+          ctx.Print(std::to_string(curves) + " chained curve(s) selected"); }
+      }));
+}
+
+}  // namespace dino8::app

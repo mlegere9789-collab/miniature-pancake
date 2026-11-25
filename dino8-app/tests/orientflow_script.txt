@@ -1,0 +1,63 @@
+# OFS_: OrientOnSrf / Splop / FlowAlongSrf on curved surfaces (sections/63_orientflow.sh slices the output on the unknown-command markers
+# OFSBEGIN_<name>). The maths is the kernel's (pattern.h: SurfaceNormalFrameAt, OrientOnSurfaceTransform, FlowPointAlongSurface; closed forms in
+# dino8-kernel/tests/extra/orient_flow_on_surface.cpp); here the commands are checked end to end.
+#   orient: the sphere r 5 about the origin, a vertical line (0,0,0)-(0,0,4) (the base point at its bottom, 4 = the box height h of the kernel test)
+#           oriented (Copy is on by default: the oriented copy is object 3) onto P = 5 (sin 30 cos 40, sin 30 sin 40, cos 30) = (1.915111, 1.606969, 4.330127): the base lands on P, the line runs
+#           along the radial normal, so its far end is at distance r + h = 9: 1.8 P = (3.447200, 2.892544, 7.794229) (its middle at r + h/2 = 7);
+#   splop:  the same line, one copy at P by Splop: the same two endpoints;
+#   flow:   a plane patch 4 x (10 pi) (u runs along y: Plane 0,0,0 4,31.4159265,0) flowed onto the cylinder r 5, height 4 about z (ExtrudeCrv of
+#           the circle: u = angle, v = height). The line (2, 0.07 L, 0) - (2, 0.19 L, 0), L = 10 pi, lies over a NON-knot interval of the rational
+#           circle; arc-length fractions put it on the arc from 25.2 to 68.4 degrees at height 2, of length 5 * 0.12 * 2 pi = 3.769911 (a
+#           parameter-fraction map gave 3.9243).
+SetActiveViewport Top
+
+New
+OFSBEGIN_orient
+Sphere 0,0,0 5
+Line 0,0,0 0,0,4
+SelNone
+SelID 2
+OrientOnSrf
+0,0,0
+SelID 1
+Enter
+1.915111,1.606969,4.330127
+Enter
+SelNone
+SelID 3
+List
+
+New
+OFSBEGIN_splop
+Sphere 0,0,0 5
+Line 0,0,0 0,0,4
+SelNone
+SelID 2
+Splop
+SelID 1
+Enter
+1.915111,1.606969,4.330127
+Enter
+SelNone
+SelID 3
+List
+
+New
+OFSBEGIN_flow
+Plane 0,0,0 4,31.4159265,0
+Circle 0,0,0 5
+SelLast
+ExtrudeCrv Solid=No
+4
+SelNone
+Line 2,2.199115,0 2,5.969026,0
+SelNone
+SelID 4
+FlowAlongSrf
+SelID 1
+Enter
+SelID 3
+Enter
+SelNone
+SelID 4
+Length digits=6

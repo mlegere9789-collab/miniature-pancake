@@ -1,0 +1,108 @@
+# History persistence, part 2 (tests/smoke.sh section HPS_): a FRESH app process
+# opens the files hps_save_script.txt wrote, so nothing in memory survives from
+# the session that built them. Reopened ids: curve 1 -> extrude 2 -> offset 3, and
+# curve 4 -> extrude 5 (+ box 6) -> intersection 7 (the throw-away box that made
+# the saved ids differ is gone, so every record id was remapped on load).
+SetActiveViewport Top
+
+# ============================================================ ON: propagation after reopen
+Open @TMP@/hps_on.3dm
+History On
+History
+# (no UpdateHistory anywhere in this section)
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 1
+Scale 5,0,0 2
+SelNone
+SelID 3
+Volume
+Undo
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 7
+Volume
+SelNone
+SelID 4
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 7
+Volume
+Undo
+SelNone
+SelID 7
+Volume
+# Records survive a second Save/Open round trip (ids shift no more, but the
+# file is rewritten from the loaded records).
+Save @TMP@/hps_on2.3dm
+New
+Open @TMP@/hps_on2.3dm
+History On
+SelNone
+SelID 1
+Move
+0,0,0
+0,5,0
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ OFF: negative control
+New
+Open @TMP@/hps_off.3dm
+History On
+History
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 3
+BoundingBox
+UpdateHistory
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ DEL: dangling source
+# The curve was deleted before Save: extrude 1 (record kept, source gone) and the
+# offset 2 built from it. Nothing can be re-run; UpdateHistory must say so and
+# leave both exactly as they were.
+New
+Open @TMP@/hps_del.3dm
+History On
+History
+SelNone
+SelID 2
+BoundingBox
+SelNone
+SelID 2
+Volume
+UpdateHistory
+SelNone
+SelID 2
+BoundingBox
+SelNone
+SelID 2
+Volume

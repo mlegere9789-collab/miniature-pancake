@@ -1,0 +1,27 @@
+# SBX: ToSubD on a closed Brep box (SubD::FromBrep exact cage). The cage used
+# to come out with 0 creases and an unconditional "1 of 1 ... verified, worst
+# deviation 0.000000" claim, while its Catmull-Clark limit surface was a
+# rounded blob of about a third of the box's volume. The sharp Brep edges are
+# now creased and the limit surface is MEASURED against the Brep.
+Box 0,0,0 10,10,0 10
+SelLast
+ToSubD
+SelLast
+List
+What
+# The limit surface converted to NURBS must still enclose ~1000 (a 10x10x10 box).
+# (Volume of the SubD object itself is the control cage's, which is 1000 even
+# for an uncreased cage, so it proves nothing; the converted NURBS solid is the
+# limit surface: 327.1 with the old uncreased cage.)
+ToNURBS
+SelLast
+List
+Volume
+SelAll
+Hide
+# Negative control: a smooth shape still reports its tessellate-and-verify figure.
+Sphere 100,0,0 5
+SelLast
+ToSubD
+SelLast
+List

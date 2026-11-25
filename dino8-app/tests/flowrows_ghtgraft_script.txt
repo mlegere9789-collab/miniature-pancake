@@ -1,0 +1,14 @@
+# Flow Register row D8-GH-TREES-0010 (Graft parameter modifier): load, set the port modifiers, re-solve and bake, read back by sections/104_ghtgraft.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=No
+GrasshopperPort 10 0 Graft On
+GrasshopperPort 20 0 Graft On
+GrasshopperPort 29 0 Graft On
+GrasshopperPort 35 0 Flatten On
+GrasshopperPort 35 0 Graft On
+GrasshopperPort 38 0 Graft On
+GrasshopperPort 38 0 Flatten On
+GrasshopperUpdateBakes
+@expect_objects 46
+SelAll
+List

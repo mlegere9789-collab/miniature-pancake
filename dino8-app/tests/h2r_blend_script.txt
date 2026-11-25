@@ -1,0 +1,103 @@
+# BlendSrf records construction history (tests/smoke.sh section H2R_, part 4).
+# With History On the blend surface is recorded as {surface A, surface B} with each
+# boundary edge named intrinsically (isoparametric direction, min/max, face index) and
+# the continuity; the two surfaces are NOT consumed. Moving either surface rebuilds the
+# blend automatically, EditHistory changes the continuity, and a source that is no
+# longer a surface makes the rebuild refuse and keep the old blend. Every claim is a
+# measured Bounding box, compared with the SAME blend built fresh (History Off) between
+# the surfaces in their moved positions.
+# @TMP@ is the test temp directory.
+SetActiveViewport Top
+
+# ============================================================ B1: two coplanar squares -> BlendSrf
+History On
+Plane 0,0,0 10,10,0
+Plane 20,0,0 30,10,0
+BlendSrf
+10,5,0
+20,5,0
+History
+SelNone
+SelID 3
+BoundingBox
+# Move the second square +10 in X: the blend lengthens (10 .. 30).
+SelNone
+SelID 2
+Move
+0,0,0
+10,0,0
+SelNone
+SelID 3
+BoundingBox
+# Move the first square +4 in Y: the blend follows it (its y range shifts to 4 .. 14 on the left end).
+SelNone
+SelID 1
+Move
+0,0,0
+0,4,0
+SelNone
+SelID 3
+BoundingBox
+EditHistory 3
+EditHistory 3 continuity=curvature
+SelNone
+SelID 3
+BoundingBox
+Save @TMP@/h2r_blend.3dm
+New
+Open @TMP@/h2r_blend.3dm
+History On
+History
+SelNone
+SelID 2
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ B2: the SAME blends built fresh between the moved squares (History Off)
+# (first square at y 4..14, second at x 30..40; tangency, then in a new document curvature)
+New
+History Off
+Plane 0,4,0 10,14,0
+Plane 30,0,0 40,10,0
+BlendSrf
+10,9,0
+30,5,0
+SelNone
+SelID 3
+BoundingBox
+History
+New
+History Off
+Plane 0,4,0 10,14,0
+Plane 30,0,0 40,10,0
+BlendSrf
+Continuity=Curvature
+10,9,0
+30,5,0
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ B3: a source that is replaced by something else: the rebuild refuses
+New
+History On
+Plane 0,0,0 10,10,0
+Plane 20,0,0 30,10,0
+BlendSrf
+10,5,0
+20,5,0
+SelNone
+SelID 3
+BoundingBox
+# Deleting the second square leaves the record naming a deleted source.
+SelNone
+SelID 2
+Delete
+UpdateHistory
+SelNone
+SelID 3
+BoundingBox

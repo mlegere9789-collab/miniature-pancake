@@ -1,0 +1,101 @@
+# MoveFace of one planar face along its own normal through the exact kernel route (the "MFX_" section, tests/sections/83_moveface_exact.sh).
+#
+# MovePartsCommand used to move every picked face with the approximate rigid MoveBrepFaces. For ONE planar face moved along its own
+# normal it now calls kernel::Brep::OffsetPlanarFaceAlongNormal first (exact: the face, its edges and corners translate, the curved or
+# planar neighbours are continued or cut and re-trimmed) and falls back to the approximate move only when the kernel declines, printing the
+# kernel's reason. Expected values are closed forms of an extruded circle (R = 3): V = pi R^2 h and S = 2 pi R^2 + 2 pi R h.
+#   cylgrow : h = 8, top cap raised 2.5 -> h = 10.5 : V = 296.8805, S = 254.4690
+#   cylpull : h = 8, top cap lowered 5  -> h = 3    : V =  84.8230, S = 113.0973
+#   undo    : the exact move is one undo step        : V = 226.1947 (h = 8)
+#   taper   : a drafted (conical) wall is not a surface of translation along the cap normal: the kernel declines and says so
+#   box     : the app's Box is a welded B-rep: top face raised 3 (10 -> 13): V = 1300, S = 720 (planar neighbours, exact too)
+#   side    : a sideways move of the cap is not an offset: no exact route, the note says so
+
+SetActiveViewport Top
+
+New
+MFXBEGIN_cylgrow
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+MoveFace
+1,1,8
+Enter
+1,1,8
+1,1,10.5
+SelLast
+Volume
+Area
+
+New
+MFXBEGIN_cylpull
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+MoveFace
+1,1,8
+Enter
+1,1,8
+1,1,3
+SelLast
+Volume
+Area
+
+New
+MFXBEGIN_undo
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+MoveFace
+1,1,8
+Enter
+1,1,8
+1,1,10.5
+Undo
+SelLast
+Volume
+
+New
+MFXBEGIN_taper
+Circle 0,0,0 3
+SelLast
+ExtrudeCrvTapered DraftAngle=5.7105931
+8
+SelLast
+MoveFace
+0.5,0.5,8
+Enter
+0.5,0.5,8
+0.5,0.5,10
+
+New
+MFXBEGIN_box
+Box 0,0,0 10,10,0 10
+MoveFace
+5,5,10
+Enter
+5,5,10
+5,5,13
+SelLast
+Volume
+Area
+
+New
+MFXBEGIN_side
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+MoveFace
+1,1,8
+Enter
+1,1,8
+2,1,8
+MFXBEGIN_end

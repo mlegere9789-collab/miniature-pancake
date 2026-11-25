@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-CURVE-0027 (Curve Area): player + bake, read back by sections/97_garea.sh (see flowgeo_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 12
+SelAll
+List

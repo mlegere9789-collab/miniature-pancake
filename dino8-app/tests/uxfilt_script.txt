@@ -1,0 +1,19 @@
+# UXFILT: the three sub-object selection-filter toggles with SelectionFilterNone, and DecimalPoint with SetZoomExtentsBorder (a number that prints 1.05 or 1,05).
+# No geometry is needed; the filter state is read back from the one-line report each command prints.
+@wait 2
+UXBEGIN_filter
+SelectionFilterNone
+SelectionFilterEdges
+SelectionFilterFaces
+SelectionFilterVertices
+SelectionFilterEdges
+SelectionFilterNone
+SelectionFilterEdges
+SelectionFilterNone
+UXBEGIN_decimal
+DecimalPoint Comma
+SetZoomExtentsBorder
+DecimalPoint Point
+SetZoomExtentsBorder
+UXBEGIN_end
+

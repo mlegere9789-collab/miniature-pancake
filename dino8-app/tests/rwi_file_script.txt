@@ -1,0 +1,27 @@
+# RWIFIL (sections/94_rwifil.sh): Save, SaveACopy, SaveAs, Revert and a failed save, each file read by the oracle's openNURBS chunk walker. @TMP@ = scratch.
+# Two 10 mm boxes (breps). Files: a.3dm, c.3dm (a copy), b.3dm (save as).
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+Save @TMP@/a.3dm
+SaveACopy @TMP@/c.3dm
+# Save (no path) goes to the current file, which is still a.3dm after the copy: delete one box and save
+SelLast
+Delete
+@expect_objects 1
+Save
+# SaveAs: the new file becomes the current one; a box added and saved lands in b.3dm and a.3dm keeps its single box
+SaveAs @TMP@/b.3dm
+Box 50,0,0 60,10,0 10
+@expect_objects 2
+Save
+# Revert discards the unsaved box and reopens b.3dm
+Box 80,0,0 90,10,0 10
+@expect_objects 3
+Revert
+@expect_objects 2
+# a save that cannot be written reports it and leaves b.3dm as it was
+SaveAs @TMP@/no_such_folder/x.3dm
+@expect_objects 2
+# a save that is refused (55 is not a valid archive version) over an existing file reports it and leaves c.3dm as it was
+SaveAs @TMP@/c.3dm Version=55
+@expect_objects 2

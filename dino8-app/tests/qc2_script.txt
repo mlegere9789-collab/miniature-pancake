@@ -1,0 +1,131 @@
+# QC2_: hostile-input probes for Section / Contour (smoke section tests/sections/60_qc2.sh cuts the output at each
+# "Unknown command: QC2BEGIN_<name>" marker line).
+SetActiveViewport Top
+New
+
+QC2BEGIN_sec_nan_point
+Box 0,0,0 20,20,0 10
+SelAll
+Section
+nan,5,0
+7,-20,0
+7,20,0
+Cancel
+SelAll
+List
+New
+
+QC2BEGIN_sec_inf_point
+Box 0,0,0 20,20,0 10
+SelAll
+Section
+inf,5,0
+7,-20,0
+7,20,0
+Cancel
+New
+
+QC2BEGIN_contour_tiny
+Box 0,0,0 20,20,0 10
+SelAll
+Contour
+0,0,0
+0,0,1
+1e-9
+5
+Cancel
+New
+
+QC2BEGIN_contour_bad_spacing
+Box 0,0,0 20,20,0 10
+SelAll
+Contour
+0,0,0
+0,0,1
+-5
+nan
+5
+Cancel
+New
+
+QC2BEGIN_rmk_bad_tol
+Polyline 0,0,0 5,0,0 5,4,0
+Enter
+SelCrv
+ChangeDegree
+3
+SelCrv
+RemoveMultiKnot
+Tolerance=nan
+Tolerance=-1
+Tolerance=100
+Enter
+New
+
+QC2BEGIN_fit_bad_opts
+Curve 0,0,0 2.5,0,1.5 5,0,-1.5 7.5,0,1.5 10,0,0 Enter
+Curve 0,3,0 2.5,3,-1 5,3,1 7.5,3,-1 10,3,0 Enter
+Curve 0,6,0 2.5,6,1.2 5,6,-1.2 7.5,6,1.2 10,6,0 Enter
+Curve 0,9,0 2.5,9,-0.5 5,9,0.5 7.5,9,-0.5 10,9,0 Enter
+SelNone
+SelCrv
+Loft
+SelNone
+SelCrv
+Delete
+SelSrf
+FitSrf
+Tolerance=abc
+MaxPoints=500
+Tolerance=0.05
+Enter
+New
+
+QC2BEGIN_offset_nan
+Box 0,0,0 20,20,0 10
+SelAll
+OffsetSrf
+nan
+inf
+2
+Cancel
+New
+
+QC2BEGIN_undo_noop_section
+Box 0,0,0 20,20,0 10
+SelLast
+SetObjectName KeepMe
+SelAll
+Section
+50,-20,0
+50,20,0
+Undo
+SelAll
+List
+New
+
+QC2BEGIN_redo_noop_section
+Box 0,0,0 20,20,0 10
+SelLast
+Move 0,0,0 5,0,0
+Undo
+SelAll
+Section
+50,-20,0
+50,20,0
+Redo
+SelAll
+BoundingBox
+New
+
+QC2BEGIN_locked_only
+Curve 0,0,0 2,3,0 5,-1,0 8,2,0 10,0,0 Enter
+SelCrv
+Lock
+SelNone
+RemoveMultiKnot
+SelCrv
+Cancel
+New
+
+QC2BEGIN_end

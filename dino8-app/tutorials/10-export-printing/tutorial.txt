@@ -1,0 +1,31 @@
+#title: Exporting and printing
+#summary: Save the model, export it for 3D printing as STL and for other tools as OBJ, and print the drawing to PDF.
+#level: Beginner
+# Source: extends docs/tutorial_scripts/09_save_export.txt and tests/viewtools_script.txt / tests/exchange_script.txt (Print, Export).
+#narrate: Getting a model out of the program: for the printer, for other software, and onto paper. We start with a small part to export.
+SetActiveViewport Perspective
+MaxViewport
+Box 0,0,0 20,20,0 8
+Cylinder 10,10,8 5 6
+SelAll
+BooleanUnion
+@expect_objects 1
+ZoomExtents
+#narrate: A block with a round boss on top, fused into one solid.
+Save @TMP@/part.3dm
+#narrate: Save writes a native 3dm file, which keeps everything: layers, units, history. Always save this first.
+SelAll
+Export @TMP@/part.stl
+#narrate: Export picks the format from the file extension. STL is what most slicers want for 3D printing: select the part and export. The solid is saved as a triangle mesh.
+Export @TMP@/part.obj
+#narrate: OBJ is a widely understood mesh format for rendering and game tools. The same selection, a different extension.
+SelNone
+Print @TMP@/part.pdf
+#narrate: Print writes a vector PDF of the active view. Because the lines are vectors, the drawing stays sharp at any print size.
+New
+@expect_objects 0
+Open @TMP@/part.3dm
+@expect_objects 1
+ZoomExtents
+#narrate: To prove the save worked, start a new empty document and open the file again. The part comes back exactly as we left it.
+#narrate: Before you send an STL to a printer, check the part is a closed solid and its units are what the slicer expects.

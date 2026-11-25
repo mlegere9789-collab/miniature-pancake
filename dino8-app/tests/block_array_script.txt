@@ -1,0 +1,35 @@
+# BlockSetArraySpacing/BlockSetArrayCount command-line wiring (PARITY_MAP.md
+# "Dynamic blocks" Array parameter - the second of the three previously
+# entirely-unattempted parameter/action types alongside Flip, which
+# BlockToggleFlip already closed; Stretch/Lookup remain unattempted). The
+# Document-level SetBlockInstanceArrayCount/PlaceFiltered math itself is
+# unit-tested directly in test_block_array.cpp; this instead exercises the
+# real scriptable commands end to end.
+#
+# A one-Point block "ArrBlk" (local point at 1,0,0) placed at insert point
+# 10,0,0, then configured (X axis, 5 units apart) and arrayed to 3 copies:
+# the placed instance's points must land at exactly 11,0,0 / 16,0,0 /
+# 21,0,0 (local (1,0,0) plus the 10,0,0 insert, then stepped by k*5 along
+# X for k=0,1,2) - not just three unmoved copies stacked on each other.
+Point 1,0,0
+SelLast
+Block
+0,0,0
+ArrBlk
+BlockAddState
+ArrBlk
+Default
+BlockSetArraySpacing
+ArrBlk
+Axis=X
+5
+Insert
+ArrBlk
+10,0,0
+Enter
+SelLast
+BlockSetArrayCount
+3
+SelBlockInstanceOf
+ArrBlk
+List

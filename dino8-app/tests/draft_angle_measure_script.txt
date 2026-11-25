@@ -1,0 +1,24 @@
+# DraftAngleAnalysis prints the MEASURED draft-angle range (not only a colour ramp).
+# A box has 6 flat faces, so its draft angles are closed-form for any pull direction p:
+#   a face with unit normal n has draft = 90 - angle(n, p) = asin(n . p_unit) degrees,
+# and the box (normals +-X, +-Y, +-Z) spans exactly -max .. +max over |n . p_unit|.
+#   p = (0,1,2): asin(2/sqrt5) = 63.4349 deg (the Z faces)  -> -63.4 .. 63.4
+#   p = (3,4,0): asin(4/5)     = 53.1301 deg (the Y faces)  -> -53.1 .. 53.1
+#   p = World Z: Z faces parallel to the pull               -> -90.0 .. 90.0
+# See smoke.sh section "DraftAngleAnalysis measured range" (DAM_ checks).
+SetActiveViewport Top
+Box 0,0,0 10,10,0 5
+SelLast
+DraftAngleAnalysis Direction=0,1,2
+SelLast
+DraftAngleAnalysisOff
+SelLast
+DraftAngleAnalysis Direction=3,4,0
+SelLast
+DraftAngleAnalysisOff
+SelLast
+DraftAngleAnalysis Direction=World
+SelLast
+DraftAngleAnalysisOff
+SelAll
+Delete

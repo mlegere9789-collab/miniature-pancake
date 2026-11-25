@@ -1,0 +1,76 @@
+:root {
+  --bg: #11161d; --panel: #1d2733; --panel2: #263445; --ink: #e8eef5; --muted: #8fa1b5;
+  --accent: #36a3ff; --ok: #3ccf7a; --bad: #ff5f5f; --tool: 56px;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior: none; touch-action: none; -webkit-user-select: none; user-select: none; }
+#app { position: fixed; inset: 0; overflow: hidden; }
+canvas#gl, canvas#overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+canvas#overlay { pointer-events: none; }
+canvas#gl { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+#topbar { position: absolute; top: 0; left: 0; right: 0; padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  display: flex; gap: 10px; align-items: center; pointer-events: none; }
+#topbar > * { pointer-events: auto; }
+.chip { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 22px;
+  background: var(--panel); color: var(--ink); border: 1px solid #364a60; font-size: 15px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--ok); } .dot.off { background: var(--bad); } .dot.local { background: var(--accent); }
+#hint { flex: 1; color: var(--muted); font-size: 14px; pointer-events: none; text-shadow: 0 1px 2px #000; }
+#stats { color: var(--muted); font-size: 13px; pointer-events: none; text-shadow: 0 1px 2px #000; }
+
+#toolbar { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 10px);
+  display: flex; gap: 6px; padding: 6px; max-width: calc(100vw - 16px); overflow-x: auto;
+  background: rgba(29, 39, 51, .94); border: 1px solid #364a60; border-radius: 18px; touch-action: pan-x; }
+#toolbar button { min-width: var(--tool); min-height: var(--tool); padding: 4px 8px; border-radius: 14px; border: 0;
+  background: transparent; color: var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; }
+#toolbar button i { font-style: normal; font-size: 22px; line-height: 26px; }
+#toolbar button span { font-size: 11px; color: var(--muted); }
+#toolbar button.active { background: var(--accent); color: #04121f; }
+#toolbar button.active span { color: #04121f; }
+#toolbar button:active { background: var(--panel2); }
+#toolbar .sep { width: 1px; background: #364a60; margin: 6px 2px; flex: none; }
+#toolbar button:disabled { opacity: .35; }
+
+.panel { position: absolute; display: none; background: var(--panel); border: 1px solid #364a60; border-radius: 16px;
+  padding: 16px; box-shadow: 0 8px 30px rgba(0,0,0,.5); touch-action: pan-y; }
+.panel.open { display: block; }
+#panel-connect { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; }
+.panel.side { right: 10px; top: 64px; width: min(300px, calc(100vw - 20px)); max-height: calc(100vh - 160px); overflow: auto; }
+.panel.bottom { left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 84px); padding: 10px; }
+h2 { margin: 0 0 8px; font-size: 20px; }
+.muted { color: var(--muted); margin: 6px 0; font-size: 14px; }
+label { display: block; margin: 10px 0; color: var(--muted); font-size: 13px; }
+input[type=text], input[type=password] { width: 100%; min-height: 48px; margin-top: 4px; padding: 0 12px; font-size: 17px;
+  color: var(--ink); background: var(--bg); border: 1px solid #364a60; border-radius: 10px; -webkit-user-select: text; user-select: text; }
+.row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.panel button, .filebtn { min-height: 48px; padding: 0 18px; border-radius: 12px; border: 1px solid #364a60; background: var(--panel2);
+  color: var(--ink); font-size: 16px; display: inline-flex; align-items: center; }
+.panel button.primary { background: var(--accent); color: #04121f; border-color: var(--accent); font-weight: 600; }
+.filebtn { margin: 0; color: var(--ink); } .filebtn input { display: none; }
+.msg { min-height: 1.4em; font-size: 14px; color: var(--muted); } .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+hr { border: 0; border-top: 1px solid #364a60; margin: 14px 0; }
+#layer-list { list-style: none; margin: 0; padding: 0; }
+#layer-list li { display: flex; align-items: center; gap: 12px; min-height: 52px; border-bottom: 1px solid #2c3d51; }
+#layer-list .sw { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #fff4; flex: none; }
+#layer-list .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layer-list button { min-width: 64px; min-height: 40px; padding: 0 10px; }
+#display-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#display-modes .mode.active { background: var(--accent); color: #04121f; }
+#cmd-log { margin: 0 0 8px; height: 110px; overflow: auto; font: 13px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #bcd; white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
+#cmd-form { display: flex; gap: 8px; align-items: center; }
+#cmd-form input { flex: 1; margin: 0; }
+#cmd-prompt { color: var(--muted); font-size: 13px; max-width: 28vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast { position: absolute; left: 50%; top: 70px; transform: translateX(-50%); background: #000c; color: #fff; padding: 10px 16px;
+  border-radius: 12px; font-size: 15px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+#toast.show { opacity: 1; }
+#conn-label { max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) {
+  #toolbar { flex-wrap: wrap; justify-content: center; left: 8px; right: 8px; transform: none; overflow-x: visible; }
+  #toolbar button { min-width: 48px; min-height: 48px; }
+  #toolbar .sep { display: none; }
+  #hint, #stats { display: none; }
+  #conn-label { max-width: 70vw; }
+}

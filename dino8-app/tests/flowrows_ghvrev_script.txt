@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0013 (Vector Reverse): player + bake, read back by sections/104_ghvrev.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 22
+SelAll
+List

@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0017 (Polar Array): player + bake, read back by sections/104_ghxpolarr.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 56
+SelAll
+List

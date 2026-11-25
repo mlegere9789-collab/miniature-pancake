@@ -1,0 +1,98 @@
+# Non-planar Patch records construction history (tests/smoke.sh section H3R_, part 3).
+# With History On the least-squares patch fitted through selected points (and through a closed non-planar curve,
+# trimmed by it) is recorded with every curve and point it was fitted to, in selection order. Moving a point, or a
+# control point of the curve, re-runs the fit automatically (no UpdateHistory). Every claim is a measured Bounding box /
+# Area, compared with the SAME patch built fresh (History Off) from the same, already moved, sources.
+# @TMP@ is the test temp directory.
+# Bounding boxes, in order (Area in order of the Area lines):
+#  1 patch through 9 points   2 centre point moved +2 Z   3 fresh patch from the moved points (History Off) (= 2)
+#  4 all points flattened to z=0 (the data are planar now: refused, patch kept) (= 2)   5 a point deleted (refused, patch kept) (= 2)
+#  6 saddle-curve patch (trimmed face)   7 two control points of the curve moved   8 fresh patch from the moved curve (= 7)
+SetActiveViewport Top
+
+# ============================================================ P1: nine points
+History On
+Point -2,-2,1
+Point -2,0,0
+Point -2,2,-1
+Point 0,-2,0
+Point 0,0,0
+Point 0,2,0
+Point 2,-2,-1
+Point 2,0,0
+Point 2,2,1
+SelPt
+Patch
+History
+SelNone
+SelID 10
+BoundingBox
+Area
+SelNone
+SelID 5
+Move
+0,0,0
+0,0,2
+SelNone
+SelID 10
+BoundingBox
+Area
+History Off
+SelNone
+SelPt
+Patch
+SelLast
+BoundingBox
+Area
+SelLast
+Delete
+History On
+# Negative control: every point set to z=0 makes the data planar; the fit no longer applies, the old patch is kept.
+SelNone
+SelPt
+SetPt
+SelNone
+SelID 10
+BoundingBox
+SelNone
+SelID 9
+Delete
+SelNone
+SelID 10
+BoundingBox
+History
+
+# ============================================================ P2: a closed saddle curve, trimmed face
+New
+History On
+Curve 5.000000,0.000000,1.500000 4.829629,1.294095,1.299038 4.330127,2.500000,0.750000 3.535534,3.535534,0.000000 2.500000,4.330127,-0.750000 1.294095,4.829629,-1.299038 0.000000,5.000000,-1.500000 -1.294095,4.829629,-1.299038 -2.500000,4.330127,-0.750000 -3.535534,3.535534,-0.000000 -4.330127,2.500000,0.750000 -4.829629,1.294095,1.299038 -5.000000,0.000000,1.500000 -4.829629,-1.294095,1.299038 -4.330127,-2.500000,0.750000 -3.535534,-3.535534,0.000000 -2.500000,-4.330127,-0.750000 -1.294095,-4.829629,-1.299038 -0.000000,-5.000000,-1.500000 1.294095,-4.829629,-1.299038 2.500000,-4.330127,-0.750000 3.535534,-3.535534,-0.000000 4.330127,-2.500000,0.750000 4.829629,-1.294095,1.299038 Close
+SelCrv
+Patch
+History
+SelNone
+SelID 2
+BoundingBox
+Area
+SelNone
+SelID 1
+PointsOn
+SelControlPointRegion
+3.3,3.3,0
+3.8,3.8,0
+SelControlPointRegion
+-3.8,-3.8,0
+-3.3,-3.3,0
+HBar
+HBarDragSelfTest 0,0,0.4
+HBarOff
+SelNone
+SelID 2
+BoundingBox
+Area
+History Off
+SelNone
+SelCrv
+Patch
+SelLast
+BoundingBox
+Area

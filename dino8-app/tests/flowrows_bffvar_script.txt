@@ -1,0 +1,6 @@
+# Flow Register row Field Variance (Blender Geometry Nodes): player + bake, read back by sections/98_bffvar.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 9
+SelAll
+List

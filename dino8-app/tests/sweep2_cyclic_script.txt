@@ -1,0 +1,280 @@
+# Sweep2 with SEVERAL cross-sections on CLOSED rails and on rails that TOUCH at
+# their ends -> the kernel's exact Brep::Sweep2Sections (cyclic sweep with a
+# wrapped skin; degenerate end rows). Driven by smoke.sh's S2C_ section, which
+# cuts the output apart per case at each "Command: Sweep2" line.
+#
+#   A  two concentric circles r = 5 and r = 8 (z = 0) and three straight radial
+#      sections at 30, 150 and 270 degrees: the flat annulus, area
+#      pi (8^2 - 5^2) = 122.52 (the closing segment 270 -> 390 crosses rail 1's seam).
+#   B  the same rails with three different ARCHED radial sections (control
+#      heights 1, 4 and 2): sections reproduced, wall edges on the rings, the
+#      tallest arch (4 / 2 = 2) in the bounding box.
+#   C  rails that meet at both ends (quadratic Beziers from (0,0,0) to (10,0,0) with control points (5,+-4,0), y = +-8 t (1 - t)), and
+#      three straight sections across: the flat lens, area
+#      2 * int y dx = 2 * int_0^1 8 t (1 - t) 10 dt = 160 / 6 = 26.667.
+#   D  the same rails with three ARCHED sections (control heights 1, 3, 1).
+#   E  negative control: three sections whose rail-2 ends swap places round
+#      the closed rails (anchors cross) must still be refused, reason printed.
+#   F  a long straight run into a tight bend (cubic rails 0..100 straight, then a
+#      4 x 4 bend): 128 stations leave the wall edges 0.0165 from the rails, so
+#      the command's retry ladder must reach 256 stations (edges within 2.44e-4).
+#   G  rails with a tangent jump (polyline corner): more stations do not help
+#      (0.0108 at 512), so the command must say so and fall back.
+
+# --- Case A
+NewLayer S2CARails
+Circle 0,0,0 5
+SelLast
+SetObjectName S2CARail1
+Circle 0,0,0 8
+SelLast
+SetObjectName S2CARail2
+NewLayer S2CASections
+Line 4.330127,2.5,0 6.928203,4,0
+Line -4.330127,2.5,0 -6.928203,4,0
+Line 0,-5,0 0,-8,0
+SelNone
+SelName S2CARail1
+Sweep2
+SelName S2CARail2
+Enter
+SelLayer
+Enter
+@expect_objects 6
+SelSrf
+Area
+BoundingBox
+# points ON the three sections (their middles) and on the rings between them
+SelNone
+SelSrf
+ClosestPt
+5.629165,3.25,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+-5.629165,3.25,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,-6.5,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+-6.5,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,6.5,0
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case B
+NewLayer S2CBRails
+Circle 0,0,0 5
+SelLast
+SetObjectName S2CBRail1
+Circle 0,0,0 8
+SelLast
+SetObjectName S2CBRail2
+NewLayer S2CBSections
+Curve 4.330127,2.5,0 5.629165,3.25,1 6.928203,4,0 Enter
+Curve -4.330127,2.5,0 -5.629165,3.25,4 -6.928203,4,0 Enter
+Curve 0,-5,0 0,-6.5,2 0,-8,0 Enter
+SelNone
+SelName S2CBRail1
+Sweep2
+SelName S2CBRail2
+Enter
+SelLayer
+Enter
+@expect_objects 6
+SelSrf
+BoundingBox
+# the middles of the three arches (control height / 2) are ON the surface
+SelNone
+SelSrf
+ClosestPt
+5.629165,3.25,0.5
+Enter
+SelNone
+SelSrf
+ClosestPt
+-5.629165,3.25,2
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,-6.5,1
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case C
+NewLayer S2CCRails
+Curve 0,0,0 5,4,0 10,0,0 Enter
+SelLast
+SetObjectName S2CCRail1
+Curve 0,0,0 5,-4,0 10,0,0 Enter
+SelLast
+SetObjectName S2CCRail2
+NewLayer S2CCSections
+Line 3,1.68,0 3,-1.68,0
+Line 5,2,0 5,-2,0
+Line 7,1.68,0 7,-1.68,0
+SelNone
+SelName S2CCRail1
+Sweep2
+SelName S2CCRail2
+Enter
+SelLayer
+Enter
+@expect_objects 6
+SelSrf
+Area
+BoundingBox
+SelNone
+SelSrf
+ClosestPt
+5,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,2,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+3,-1.68,0
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case D
+NewLayer S2CDRails
+Curve 0,0,0 5,4,0 10,0,0 Enter
+SelLast
+SetObjectName S2CDRail1
+Curve 0,0,0 5,-4,0 10,0,0 Enter
+SelLast
+SetObjectName S2CDRail2
+NewLayer S2CDSections
+Curve 3,1.68,0 3,0,1 3,-1.68,0 Enter
+Curve 5,2,0 5,0,3 5,-2,0 Enter
+Curve 7,1.68,0 7,0,1 7,-1.68,0 Enter
+SelNone
+SelName S2CDRail1
+Sweep2
+SelName S2CDRail2
+Enter
+SelLayer
+Enter
+@expect_objects 6
+SelSrf
+BoundingBox
+SelNone
+SelSrf
+ClosestPt
+5,0,1.5
+Enter
+SelNone
+SelSrf
+ClosestPt
+3,0,0.5
+Enter
+SelNone
+SelSrf
+ClosestPt
+7,0,0.5
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case E: crossing anchors round closed rails
+NewLayer S2CERails
+Circle 0,0,0 5
+SelLast
+SetObjectName S2CERail1
+Circle 0,0,0 8
+SelLast
+SetObjectName S2CERail2
+NewLayer S2CESections
+Line 4.924039,0.868241,0 7.878462,1.389185,0
+Line -3.213938,3.830222,0 -2.736161,-7.517541,0
+Line -1.710101,-4.698463,0 -5.142300,6.128356,0
+SelNone
+SelName S2CERail1
+Sweep2
+SelName S2CERail2
+Enter
+SelLayer
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case F: long straight run into a tight bend
+NewLayer S2CFRails
+Curve 0,0,0 100,0,0 104,0,0 104,0,4 Enter
+SelLast
+SetObjectName S2CFRail1
+Curve 0,4,0 100,4,0 104,4,0 104,4,4 Enter
+SelLast
+SetObjectName S2CFRail2
+NewLayer S2CFSections
+Line 0,0,0 0,4,0
+Line 104,0,4 104,4,4
+SelNone
+SelName S2CFRail1
+Sweep2
+SelName S2CFRail2
+Enter
+SelLayer
+Enter
+@expect_objects 5
+SelSrf
+BoundingBox
+SelNone
+SelSrf
+ClosestPt
+0,2,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+104,2,4
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case G: polyline corner rails, the tangent jump no station count follows
+NewLayer S2CGRails
+Polyline 0,0,0 40,0,0 40,0,30 Enter
+SelLast
+SetObjectName S2CGRail1
+Polyline 0,4,0 44,4,0 44,4,30 Enter
+SelLast
+SetObjectName S2CGRail2
+NewLayer S2CGSections
+Line 0,0,0 0,4,0
+Line 40,0,30 44,4,30
+SelNone
+SelName S2CGRail1
+Sweep2
+SelName S2CGRail2
+Enter
+SelLayer
+Enter
+SelAll
+Delete
+@expect_objects 0

@@ -1,0 +1,15 @@
+# Tutorial 10: Draft a 2D profile, round its corners, and extrude it into a
+# solid - verifies the exact command sequence quoted in
+# docs/site/tutorials.html "Draft, fillet, and extrude a profile" tutorial.
+SetActiveViewport Top
+Rectangle3Pt 0,0,0 20,0,0 0,10,0
+@expect_objects 1
+SelLast
+FilletCorners
+2
+@expect_objects 1
+SelCrv
+ExtrudeCrv 8
+@expect_objects 2
+SelID 2
+Volume

@@ -1,0 +1,8 @@
+SetActiveViewport Top
+New
+Open @TMP@/dxfm_fixture.dxf
+AnnotationStyles Name=Arch Height=3.5 Arrow=2 Font=DejaVuSans.ttf Precision=2 AngularPrecision=1 Suffix=mm ExtOffset=1 ExtExtension=1.5 TextPlacement=Centered
+Text Height=3.5 Plan 0,-20,0
+DimLinear 0,0,0 40,0,0 0,10,0
+SelAll
+Export @TMP@/m1.dxf

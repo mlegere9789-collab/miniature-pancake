@@ -1,0 +1,55 @@
+# SRFPX: a surface edit on a face of a Brep must be seen by everything that reads the face's surface (see sections/89_srfpx.sh).
+# ON_BrepFace::SurfaceOf() - and so EvaluateUVPt on a Brep (it evaluates face 0), Area(), Volume() of the kernel, and every second edit of the same face -
+# returns the face's cached surface proxy, which the edit commands must repoint when they replace the surface slot (kernel::ReplaceBrepSurface).
+# Fixture: Box 0,0,0 10,10,0 10; face 0 is the plane y = 0 (u along x, v along z), a degree-1 patch with 2 x 2 control points; EvaluateUVPt at the normalized
+# parameter 0.5,0.5 prints the middle of the face, which for that patch is the average of its four control points.
+New
+SRFPXBEGIN_base
+Box 0,0,0 10,10,0 10
+SelPolysrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+New
+SRFPXBEGIN_soft
+Box 0,0,0 10,10,0 10
+SoftEditSrf Radius=8
+0.5,0,0.5
+0.5,-3,0.5
+SelPolysrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+New
+SRFPXBEGIN_tang
+Box 0,0,0 10,10,0 10
+SrfPt -10,-5,-15 30,-5,5 30,15,5 -10,15,-15
+SetSurfaceTangent
+5,0,0.2
+5,5,-7.5
+SelPolysrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+New
+SRFPXBEGIN_match
+Box 0,0,0 10,10,0 10
+Plane 0,-15,0 10,-5,0
+MatchSrf
+Continuity=Position
+5,0,0.2
+5,-5,0
+SelPolysrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+New
+SRFPXBEGIN_soft_tang
+Box 0,0,0 10,10,0 10
+SrfPt -10,-5,-15 30,-5,5 30,15,5 -10,15,-15
+SoftEditSrf Radius=8
+0.5,0,0.5
+0.5,-3,0.5
+SetSurfaceTangent
+5,-1.441,0.2
+5,5,-7.5
+SelPolysrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+SRFPXBEGIN_end

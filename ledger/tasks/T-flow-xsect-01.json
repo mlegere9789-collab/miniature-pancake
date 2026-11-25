@@ -1,0 +1,266 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-xsect-01",
+  "corpora": [
+    "corpus/gh/xsect/intersect-mathematical",
+    "corpus/gh/xsect/intersect-physical",
+    "corpus/gh/xsect/intersect-region",
+    "corpus/gh/xsect/intersect-shape"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 29,
+    "rows": 29,
+    "with_existing_hint": 12,
+    "with_hint": 12,
+    "without_hint": 17
+  },
+  "deps": [],
+  "domains": [
+    "xsect"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Project",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPlane",
+        "rows": 1,
+        "score": 0.716,
+        "status": "implemented"
+      },
+      {
+        "name": "Plane",
+        "rows": 2,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "Curve",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "TrimSheetBySolid",
+        "rows": 1,
+        "score": 0.648,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanIntersection",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:741",
+        "rows": 1,
+        "score": 0.741,
+        "symbol": "dino8::kernel::IntersectCurveSelfIntersections"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:1019",
+        "rows": 1,
+        "score": 0.731,
+        "symbol": "dino8::kernel::NurbsSurface::Split"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:71",
+        "rows": 1,
+        "score": 0.679,
+        "symbol": "dino8::kernel::IntersectionCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:1827",
+        "rows": 1,
+        "score": 0.65,
+        "symbol": "dino8::kernel::Mesh::raw"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:669",
+        "rows": 1,
+        "score": 0.648,
+        "symbol": "dino8::kernel::SplitBrepByPlane"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:545",
+        "rows": 1,
+        "score": 0.648,
+        "symbol": "dino8::kernel::SplitBrepBySolid"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:513",
+        "rows": 1,
+        "score": 0.648,
+        "symbol": "dino8::kernel::TrimSheetBySolid"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1101",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::FaceInteriorSelfIntersection"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:676",
+        "rows": 1,
+        "score": 0.608,
+        "symbol": "dino8::kernel::CurvePlaneHit"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-xsect-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/xsect.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-XSECT-0001": {
+      "commands": [
+        "Curve"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0003": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::CurvePlaneHit"
+      ]
+    },
+    "D8-GH-XSECT-0005": {
+      "commands": [
+        "Plane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0006": {
+      "commands": [
+        "Plane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0010": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::Split"
+      ]
+    },
+    "D8-GH-XSECT-0012": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::IntersectCurveSelfIntersections",
+        "dino8::kernel::IntersectionCurve",
+        "dino8::kernel::FaceInteriorSelfIntersection"
+      ]
+    },
+    "D8-GH-XSECT-0013": {
+      "commands": [
+        "MeshPlane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0017": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::raw"
+      ]
+    },
+    "D8-GH-XSECT-0019": {
+      "commands": [
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0022": {
+      "commands": [
+        "BooleanIntersection"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XSECT-0028": {
+      "commands": [
+        "TrimSheetBySolid"
+      ],
+      "kernel": [
+        "dino8::kernel::TrimSheetBySolid"
+      ]
+    },
+    "D8-GH-XSECT-0029": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SplitBrepByPlane",
+        "dino8::kernel::SplitBrepBySolid"
+      ]
+    }
+  },
+  "rows": [
+    "D8-GH-XSECT-0001",
+    "D8-GH-XSECT-0002",
+    "D8-GH-XSECT-0003",
+    "D8-GH-XSECT-0004",
+    "D8-GH-XSECT-0005",
+    "D8-GH-XSECT-0006",
+    "D8-GH-XSECT-0007",
+    "D8-GH-XSECT-0008",
+    "D8-GH-XSECT-0009",
+    "D8-GH-XSECT-0010",
+    "D8-GH-XSECT-0011",
+    "D8-GH-XSECT-0012",
+    "D8-GH-XSECT-0013",
+    "D8-GH-XSECT-0014",
+    "D8-GH-XSECT-0015",
+    "D8-GH-XSECT-0016",
+    "D8-GH-XSECT-0017",
+    "D8-GH-XSECT-0018",
+    "D8-GH-XSECT-0019",
+    "D8-GH-XSECT-0020",
+    "D8-GH-XSECT-0021",
+    "D8-GH-XSECT-0022",
+    "D8-GH-XSECT-0023",
+    "D8-GH-XSECT-0024",
+    "D8-GH-XSECT-0025",
+    "D8-GH-XSECT-0026",
+    "D8-GH-XSECT-0027",
+    "D8-GH-XSECT-0028",
+    "D8-GH-XSECT-0029"
+  ],
+  "rows_without_hint": [
+    "D8-GH-XSECT-0002",
+    "D8-GH-XSECT-0004",
+    "D8-GH-XSECT-0007",
+    "D8-GH-XSECT-0008",
+    "D8-GH-XSECT-0009",
+    "D8-GH-XSECT-0011",
+    "D8-GH-XSECT-0014",
+    "D8-GH-XSECT-0015",
+    "D8-GH-XSECT-0016",
+    "D8-GH-XSECT-0018",
+    "D8-GH-XSECT-0020",
+    "D8-GH-XSECT-0021",
+    "D8-GH-XSECT-0023",
+    "D8-GH-XSECT-0024",
+    "D8-GH-XSECT-0025",
+    "D8-GH-XSECT-0026",
+    "D8-GH-XSECT-0027"
+  ],
+  "status": "open",
+  "title": "flow: xsect (29 rows)",
+  "wave": 1
+}

@@ -1,0 +1,27 @@
+# 3MF in the app's Import / Export (the "TMF_" section, tests/sections/88_tmf.sh; io/File3dm.cpp's ImportMeshFile / ExportMeshFile, kernel
+# threemf.h). Block "box": a 20 x 10 x 5 box (volume 1000, area 700, bounding box 0,0,0 - 20,10,5) is exported to box.3mf (the section reads
+# that file with Python's zipfile + xml.etree and sums signed tetrahedra itself), then imported into a fresh document and measured.
+# Block "inch": inch.3mf is written by the section's Python oracle (a deflate-compressed 1 x 2 x 3 INCH box); importing it into this
+# millimetre document must scale by 25.4 (volume 6 x 25.4^3, bounding box 25.4 x 50.8 x 76.2).
+SetActiveViewport Top
+New
+TMFBEGIN_box
+Box 0,0,0 20,10,0 5
+SelAll
+Export @TMP@/box.3mf
+New
+Import @TMP@/box.3mf
+SelAll
+@expect_objects 1
+List
+Volume
+Area
+BoundingBox
+New
+TMFBEGIN_inch
+Import @TMP@/inch.3mf
+SelAll
+@expect_objects 1
+List
+Volume
+BoundingBox

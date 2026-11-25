@@ -1,0 +1,61 @@
+# ToNURBS FitInterior=Yes (the "TNF_" section, tests/sections/85_tonurbsfit.sh).
+#
+# A 10-unit cube SubD (SubDBox 0,0,0 10,10,0 10) converted with Levels=2 (96-face cage, 24 irregular faces around the 8 valence-3 corners).
+# Default ToNURBS keeps the Coons interior of every irregular patch; FitInterior=Yes fits the edge curves and interior control points of those
+# patches to the limit surface. Both runs print the measured deviation against the same independent reference (the exact limit points of the
+# cage refined 2 more rounds). Oracles: the closed-form Catmull-Clark limit point of a valence-3 cube corner, (n^2 v + 4 sum(edge nbrs) +
+# sum(face-diagonal nbrs)) / (n (n + 5)) = (2.5, 2.5, 2.5) for the corner (0,0,0) and 7.5 for the far coordinates (read back from the SubD with
+# SubDVertexInfo; the polysurface's own corners are checked against it in the kernel test, the app has no closest-point query on a polysurface);
+# the kernel's own dense measurement of the same cube: default 0.00557 and fitted 0.00141 at 33 x 33 samples (this section measures 5 x 5
+# samples: 0.0072 and 0.0007).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+New
+TNFBEGIN_default
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName Cube
+SelNone
+ToNURBS
+Levels=2
+SelName Cube
+Enter
+
+New
+TNFBEGIN_fit
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName Cube
+SelLast
+SubDVertexInfo
+0,0,0
+10,0,0
+0,10,0
+10,10,0
+0,0,10
+10,0,10
+0,10,10
+10,10,10
+Enter
+SelNone
+ToNURBS
+Levels=2
+FitInterior=Yes
+SelName Cube
+Enter
+
+New
+TNFBEGIN_fit_auto
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName Cube
+SelNone
+ToNURBS
+FitInterior=Yes
+SelName Cube
+Enter
+
+New
+TNFBEGIN_end
