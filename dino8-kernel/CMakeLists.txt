@@ -120,6 +120,7 @@ add_library(dino8_kernel STATIC
   src/trimmed_offset.cpp
   src/offset_solid.cpp
   src/pattern.cpp
+  src/follow_me.cpp
   src/split_by_curve.cpp
   src/planar_curve_boolean.cpp
   src/tessellation_refine.cpp
