@@ -219,6 +219,18 @@ D8_EXTRA_TEST(Rw5FormaSunHoursFacadesRoofs) {
   d8test::Check(Near(lg.Edge(0), 1.0, 1e-12) && Near(lg.Edge(1), 1.2, 1e-12) && Near(lg.Edge(5), 2.0, 1e-12) && lg.BinOf(1.0) == 0 && lg.BinOf(1.5) == 2 &&
                     lg.BinOf(2.0) == 4 && lg.BinOf(4.0) == 4 && lg.BinOf(0.5) == 0,
                 "legend: five bins over [1, 2], values outside the range clamp to the end bins");
+  // a facade with nothing behind it: only the suns on its own side count. A north-facing cell (normal +y, no occluders at all) is lit by the
+  // sun when n . dir > 0, that is for azimuth within 90 degrees of north: of azimuths 0, 45, 100, 135, 180, 260, 315 at 30 degrees the
+  // lit ones are 0, 45 and 315 (cos(az) > 0); none of the directions grazes the wall.
+  {
+    const std::vector<SunSample> ring = AuthoredSamples({{0, 30}, {45, 30}, {100, 30}, {135, 30}, {180, 30}, {260, 30}, {315, 30}});
+    const std::vector<Cell> northWall = GridCells({0, 0, 0}, {0, 0, 10}, {10, 0, 0}, 2, 2, 9);   // (0,0,10) x (10,0,0) = (0, 100, 0): +y
+    const double h = SunHoursAt(northWall[0].center, northWall[0].normal, {}, ring, 1, 1).totalHours;
+    int expectedLit = 0;
+    for (double az : {0.0, 45.0, 100.0, 135.0, 180.0, 260.0, 315.0})
+      if (std::cos(az * kPi / 180) > 1e-9) ++expectedLit;
+    d8test::Check(Near(northWall[0].normal.y, 1, 1e-12) && expectedLit == 3 && h == 3.0, "facade cells: a bare north-facing cell is lit by the three suns within 90 degrees of north, not by the ones behind it");
+  }
   // decoy: if the shadow of A on B were ignored every wall cell would read 3 h and min would equal max
   d8test::Check(sb[0].minV != sb[0].maxV, "facade cells decoy: with the shadow ignored the wall would be uniform (3 h everywhere); the measured wall is not");
 }
