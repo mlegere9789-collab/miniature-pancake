@@ -1,6 +1,15 @@
-# Flow Register row D8-GH-TREES-0012 (Reverse parameter modifier): player + bake, read back by sections/104_ghtrev.sh (see flowrows6_gen.py)
+# Flow Register row D8-GH-TREES-0012 (Reverse parameter modifier): load, set the port modifiers, re-solve and bake, read back by sections/104_ghtrev.sh (see flowrows6_gen.py)
 Grasshopper
-GrasshopperPlayer @GRAPH@ Bake=Yes
-@expect_objects 31
+GrasshopperPlayer @GRAPH@ Bake=No
+GrasshopperPort 5 0 Reverse On
+GrasshopperPort 13 0 Reverse On
+GrasshopperPort 17 B Reverse On
+GrasshopperPort 20 0 Reverse On
+GrasshopperPort 20 0 Reverse Toggle
+GrasshopperPort 23 0 Reverse On
+GrasshopperPort 23 0 Reverse Off
+GrasshopperPort 26 0 Reverse Toggle
+GrasshopperUpdateBakes
+@expect_objects 46
 SelAll
 List

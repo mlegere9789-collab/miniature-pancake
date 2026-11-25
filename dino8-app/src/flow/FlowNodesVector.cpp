@@ -15,7 +15,9 @@ PortDef Out(std::string name, Kind k) { PortDef p; p.name = name; p.nick = name;
 
 ON_Xform MoveXform(Vector3d v) { return ON_Xform::TranslationTransformation(v); }
 ON_Xform ScaleXform(Point3d c, double s) { return ON_Xform::ScaleTransformation(c, s); }
-ON_Xform RotateXform(double angle_deg, Vector3d axis, Point3d center) { ON_Xform x; x.Rotation(angle_deg * ON_PI / 180.0, axis, center); return x; }
+// Angles of the Grasshopper components (Rotate, Polar Array) are in radians, like every other angle port of the Maths and
+// Vector nodes (Sine, Pi, Angle, Vector Rotate, ...). Blender-style nodes (FlowNodesBlender*.cpp) keep their own units.
+ON_Xform RotateXform(double angle_rad, Vector3d axis, Point3d center) { ON_Xform x; x.Rotation(angle_rad, axis, center); return x; }
 
 void AddVector() {
   Registry& r = Registry::Get();
@@ -151,7 +153,8 @@ void AddTransform() {
   }
   {
     NodeDef d; d.name = "Rotate"; d.nick = "Rotate"; d.category = "Transform"; d.subcategory = "Euclidean";
-    d.inputs = {In("Geometry", Kind::Any), In("Angle", Kind::Number, Access::Item, Value::Number(45)), In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{}))};
+    d.description = "Rotates geometry about the normal of a plane through the plane's origin. Angle is in radians, counter-clockwise seen from the tip of the normal (right-hand rule).";
+    d.inputs = {In("Geometry", Kind::Any), In("Angle", Kind::Number, Access::Item, Value::Number(ON_PI / 4)), In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{}))};
     d.outputs = {Out("Geometry", Kind::Any)};
     d.eval = [](EvalContext& c) { Plane pl = c.PlaneIn(2); c.Out(0, c.In(0).Transformed(RotateXform(c.Num(1), pl.Normal(), pl.origin))); };
     r.Add(d);
@@ -176,8 +179,10 @@ void AddTransform() {
   }
   {
     NodeDef d; d.name = "Linear Array"; d.nick = "ArrLin"; d.category = "Transform"; d.subcategory = "Array";
+    d.description = "Copies the geometry Count times along a vector: copy i is moved by i times the Direction vector, so the length of Direction is the spacing between copies. "
+                    "The optional Distance replaces that spacing: when it is given the direction is unitized and copy i moves by i * Distance (a negative Distance runs against the direction).";
     d.inputs = {In("Geometry", Kind::Any), In("Direction", Kind::Vector, Access::Item, Value::Vector(Vector3d(1, 0, 0))),
-                In("Distance", Kind::Number, Access::Item, Value::Number(5)), In("Count", Kind::Integer, Access::Item, Value::Integer(5))};
+                In("Distance", Kind::Number, Access::Item, Value::Null(), true), In("Count", Kind::Integer, Access::Item, Value::Integer(5))};
     d.outputs = {Out("Geometry", Kind::Any)};
     d.eval = [](EvalContext& c) {
       // Clamped, not just floored: Count can come straight from a .dflow
@@ -189,17 +194,18 @@ void AddTransform() {
       // 10000 ceiling as Population/Generations there (not Range/Series'
       // 100000): each copy is a full geometry clone, not a single push_back.
       const int n = std::clamp(c.Int(3), 1, 10000);
-      Vector3d dir = c.Vec(1); if (dir.Length() > 1e-12) dir.Unitize();
-      const double dist = c.Num(2);
+      Vector3d step = c.Vec(1);
+      if (c.Has(2)) { if (step.Length() > 1e-12) step.Unitize(); step = step * c.Num(2); }
       std::vector<Value> out;
-      for (int i = 0; i < n; ++i) out.push_back(c.In(0).Transformed(MoveXform(dir * (dist * i))));
+      for (int i = 0; i < n; ++i) out.push_back(c.In(0).Transformed(MoveXform(step * static_cast<double>(i))));
       c.OutList(0, out);
     };
     r.Add(d);
   }
   {
     NodeDef d; d.name = "Polar Array"; d.nick = "ArrPolar"; d.category = "Transform"; d.subcategory = "Array";
-    d.inputs = {In("Geometry", Kind::Any), In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Count", Kind::Integer, Access::Item, Value::Integer(6)), In("Angle", Kind::Number, Access::Item, Value::Number(360))};
+    d.description = "Copies the geometry Count times about the normal of a plane through its origin, copy i turned by Angle * i / Count. Angle is in radians (the default 2 pi is a full circle), counter-clockwise by the right-hand rule.";
+    d.inputs = {In("Geometry", Kind::Any), In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Count", Kind::Integer, Access::Item, Value::Integer(6)), In("Angle", Kind::Number, Access::Item, Value::Number(2.0 * ON_PI))};
     d.outputs = {Out("Geometry", Kind::Any)};
     d.eval = [](EvalContext& c) {
       // Same untrusted-file allocation hazard as Linear Array's Count, above,

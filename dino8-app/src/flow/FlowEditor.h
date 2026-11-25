@@ -43,6 +43,9 @@ class Editor {
   NodeId wiring_from_node_ = kNoNode;
   int wiring_from_port_ = -1;
   bool wiring_is_output_ = true;
+  // Right-click on an input port: the parameter-modifier menu (Reverse, Flatten, Graft, Simplify) of that port.
+  NodeId port_menu_node_ = kNoNode;
+  int port_menu_port_ = -1;
   bool search_open_ = false;
   ImVec2 search_canvas_pos_{0, 0};
   std::string search_text_;

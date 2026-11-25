@@ -28,6 +28,8 @@ def lit(v):
 
 
 class G:
+    FORMAT = "dflow1"   # the file format tag written by text(); a generator may set an instance attribute to write another
+
     def __init__(self):
         self.nodes, self.wires = [], []
 
@@ -50,7 +52,7 @@ class G:
         self.wire(p, 0, b, 0)
 
     def text(self):
-        out = ['{"format":"dflow1","nodes":[']
+        out = ['{"format":"%s","nodes":[' % self.FORMAT]
         out.append(",\n".join(json.dumps(n, separators=(",", ":")) for n in self.nodes))
         out.append('],"wires":[')
         out.append(",\n".join(json.dumps(w, separators=(",", ":")) for w in self.wires))

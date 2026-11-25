@@ -1,6 +1,10 @@
-# Flow Register row D8-GH-TREES-0011 (Simplify parameter modifier): player + bake, read back by sections/104_ghtsimp.sh (see flowrows6_gen.py)
+# Flow Register row D8-GH-TREES-0011 (Simplify parameter modifier): load, set the port modifiers, re-solve and bake, read back by sections/104_ghtsimp.sh (see flowrows6_gen.py)
 Grasshopper
-GrasshopperPlayer @GRAPH@ Bake=Yes
+GrasshopperPlayer @GRAPH@ Bake=No
+GrasshopperPort 12 0 Simplify On
+GrasshopperPort 31 0 Simplify On
+GrasshopperPort 50 0 Simplify On
+GrasshopperUpdateBakes
 @expect_objects 88
 SelAll
 List

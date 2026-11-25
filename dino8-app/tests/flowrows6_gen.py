@@ -45,6 +45,9 @@ class T:
         self.flagged = 0   # number of "flagged:" lines expected
         self.tag = 0
         self.used_exact = False
+        self.cmds = []         # GrasshopperPort command lines, run between the load and the bake
+        self.extra_nodes = 0   # nodes a legacy file gets on load (the Radians nodes put in angle wires)
+        self.modstate = {}     # (node, port) -> set of modifiers, tracked here only to compute the expected report line
 
     def _next(self):
         self.tag += 1
@@ -57,9 +60,26 @@ class T:
     def pt(self, x, y, z):
         return self.g.node("Construct Point", float(x), float(y), float(z))
 
-    def mod(self, nid, port, flag):
-        """Switches a parameter modifier (reverse, flatten, graft, simplify) on for an input of a node."""
-        self.g.nodes[nid - 1]["inputs"][port][flag] = True
+    PORTNAMES = {("Tree Statistics", 0): "Tree", ("Merge", 0): "A", ("Merge", 1): "B"}
+
+    def mod(self, nid, port, flag, mode="On", by_name=False):
+        """Sets a parameter modifier (reverse, flatten, graft, simplify) of an input port the way a user does: through the
+        GrasshopperPort command, which is the headless twin of the node editor's right-click menu on the port (both call
+        Graph::SetPortModifier). mode is On, Off or Toggle. The expected report line is worked out here from the rules: Flatten
+        and Graft exclude each other, and the letters are listed in the order the modifiers are applied (R F G S)."""
+        typ = self.g.nodes[nid - 1]["type"]
+        pname = self.PORTNAMES[(typ, port)]
+        st = self.modstate.setdefault((nid, port), set())
+        want = {"On": True, "Off": False, "Toggle": flag not in st}[mode]
+        if want:
+            st.add(flag)
+            st.discard({"flatten": "graft", "graft": "flatten"}.get(flag, ""))
+        else:
+            st.discard(flag)
+        letters = "".join(c for f, c in (("reverse", "R"), ("flatten", "F"), ("graft", "G"), ("simplify", "S")) if f in st) or "none"
+        self.cmds.append("GrasshopperPort %d %s %s %s" % (nid, pname if by_name else port, flag.capitalize(), mode))
+        self.lines.append(("GrasshopperPort: %s (#%d) input %d %s modifiers: %s" % (typ, nid, port, pname, letters),
+                           "GrasshopperPort %s on %s #%d input %s: the modifiers are now '%s'" % (flag.capitalize(), typ, nid, pname, letters.replace("none", "(none)"))))
 
     # ---- observations
     def val(self, src, port, vals, msg):
@@ -368,27 +388,35 @@ def make_rows():
     def b_xrot(t):
         g = t.g
 
-        def rt(p, deg, plane=None):
-            n = g.node("Rotate", None, float(deg)); g.wire(t.pt(*p), 0, n, 0)
+        g.FORMAT = "dflow2"   # written by this build; a "dflow1" file is migrated on load (see GHXMIGRATE)
+
+        def rt(p, ang, plane=None):
+            n = g.node("Rotate", None, float(ang)); g.wire(t.pt(*p), 0, n, 0)
             if plane is not None:
                 g.wire(plane, 0, n, 2)
             return n
-        t.comps(rt((1, 0, 0), 90), (0.0, 1.0, 0.0), "(1,0,0) by 90 degrees about Z")
-        t.comps(rt((1, 0, 0), 180), (-1.0, 0.0, 0.0), "(1,0,0) by 180 degrees")
-        t.comps(rt((2, 0, 0), 45), (S2, S2, 0.0), "(2,0,0) by 45 degrees: 2 (cos 45, sin 45) = (sqrt 2, sqrt 2)")
-        t.comps(rt((1, 0, 0), -90), (0.0, -1.0, 0.0), "(1,0,0) by -90 degrees (clockwise)")
-        t.comps(rt((1, 2, 3), 360), (1.0, 2.0, 3.0), "a full turn is the identity")
+        t.comps(rt((1, 0, 0), PI / 2), (0.0, 1.0, 0.0), "(1,0,0) by pi/2 about Z")
+        t.comps(rt((1, 0, 0), PI), (-1.0, 0.0, 0.0), "(1,0,0) by pi")
+        t.comps(rt((2, 0, 0), PI / 4), (S2, S2, 0.0), "(2,0,0) by pi/4: 2 (cos 45 deg, sin 45 deg) = (sqrt 2, sqrt 2)")
+        t.comps(rt((1, 0, 0), -PI / 2), (0.0, -1.0, 0.0), "(1,0,0) by -pi/2 (clockwise)")
+        t.comps(rt((1, 2, 3), 2 * PI), (1.0, 2.0, 3.0), "a full turn of 2 pi is the identity")
         t.comps(rt((1, 2, 3), 0), (1.0, 2.0, 3.0), "no turn")
+        # the unit is radians, not degrees: a typed 1 is one radian (cos 1, sin 1), a typed 90 is ninety radians (cos 90, sin 90) = (-0.4481, 0.8940)
+        t.comps(rt((1, 0, 0), 1.0), (math.cos(1.0), math.sin(1.0), 0.0), "a typed 1 is one radian: (cos 1, sin 1) = (0.5403, 0.8415), not one degree")
+        t.comps(rt((1, 0, 0), 90.0), (math.cos(90.0), math.sin(90.0), 0.0), "a typed 90 is ninety radians: (cos 90, sin 90) = (-0.4481, 0.8940), not a quarter turn")
+        # the Radians node (degrees -> radians) in front of the angle gives the usual degrees workflow
+        rn = g.node("Rotate"); g.wire(t.pt(1, 0, 0), 0, rn, 0); g.wire(g.node("Radians", 90.0), 0, rn, 1)
+        t.comps(rn, (0.0, 1.0, 0.0), "Radians(90 degrees) wired into the Angle gives a quarter turn")
         c = g.node("XY Plane", None); g.wire(t.pt(1, 1, 0), 0, c, 0)
-        t.comps(rt((1, 0, 0), 90, c), (2.0, 1.0, 0.0), "about the plane origin (1,1,0): (1,0,0) is (0,-1) from it, turned 90 degrees ccw (x,y) -> (-y,x) = (1,0), so (2,1,0)")
+        t.comps(rt((1, 0, 0), PI / 2, c), (2.0, 1.0, 0.0), "about the plane origin (1,1,0): (1,0,0) is (0,-1) from it, turned pi/2 ccw (x,y) -> (-y,x) = (1,0), so (2,1,0)")
         nx = g.node("Plane Normal"); g.wire(t.pt(0, 0, 0), 0, nx, 0); g.wire(t.vec(1, 0, 0), 0, nx, 1)
-        t.comps(rt((0, 1, 0), 90, nx), (0.0, 0.0, 1.0), "about the axis X (plane normal (1,0,0)): Y -> Z by the right-hand rule")
+        t.comps(rt((0, 1, 0), PI / 2, nx), (0.0, 0.0, 1.0), "about the axis X (plane normal (1,0,0)): Y -> Z by the right-hand rule")
         nz = g.node("XY Plane", None); g.wire(t.pt(0, 0, 0), 0, nz, 0)
-        r = rt((3, 4, 5), 37.0, nz)
+        r = rt((3, 4, 5), 37.0 * PI / 180.0, nz)
         dd = g.node("Distance"); g.wire(r, 0, dd, 0); g.wire(t.pt(0, 0, 5), 0, dd, 1)
         t.exact(dd, 0, 5.0, "any angle keeps the distance 5 from the axis (3,4 -> 5) and Z = 5")
     row("ghxrot", "D8-GH-XFORM-0008", "Rotate",
-        "angle in degrees, counter-clockwise about the plane normal through the plane origin: (1,0,0) by 90 = (0,1,0); by 180 = (-1,0,0); (2,0,0) by 45 = (sqrt 2, sqrt 2, 0); by -90 = (0,-1,0); 360 and 0 are the identity; about origin (1,1,0): (1,0,0) -> (2,1,0); about the X axis (0,1,0) -> (0,0,1); (3,4,5) by 37 degrees stays 5 from the axis", b_xrot)
+        "angle in RADIANS, counter-clockwise about the plane normal through the plane origin: (1,0,0) by pi/2 = (0,1,0); by pi = (-1,0,0); (2,0,0) by pi/4 = (sqrt 2, sqrt 2, 0); by -pi/2 = (0,-1,0); 2 pi and 0 are the identity; a typed 1 is one radian = (cos 1, sin 1, 0) and a typed 90 is ninety radians = (cos 90, sin 90, 0); Radians(90 degrees) wired in gives (0,1,0); about origin (1,1,0): (1,0,0) -> (2,1,0); about the X axis (0,1,0) -> (0,0,1); (3,4,5) by 37 degrees = 37 pi / 180 radians stays 5 from the axis", b_xrot)
 
     def b_mirror(t):
         g = t.g
@@ -416,50 +444,73 @@ def make_rows():
 
     def b_linarr(t):
         g = t.g
-        la = g.node("Linear Array", None, None, 3.0, ("i", 4)); g.wire(t.pt(0, 0, 0), 0, la, 0); g.wire(t.vec(0, 0, 2), 0, la, 1)
+        g.FORMAT = "dflow2"
+
+        def lin(p, direction, count, dist=None):
+            n = g.node("Linear Array", None, None, dist, ("i", count)); g.wire(t.pt(*p), 0, n, 0); g.wire(t.vec(*direction), 0, n, 1)
+            return n
+
+        def at(n, i, p, msg):
+            li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(n, 0, li, 0)
+            t.comps(li, p, msg)
+        # no Distance: the spacing is the LENGTH of the direction vector, copy i at p + i * direction
+        la = lin((0, 0, 0), (0, 0, 2), 4)
         ln = g.node("List Length"); g.wire(la, 0, ln, 0); t.val(ln, 0, "4", "count 4 gives 4 copies")
         d = g.node("Deconstruct Point"); g.wire(la, 0, d, 0)
-        t.val(d, 2, "0 3 6 9", "direction (0,0,2) is unitized: copies at Z = 0, 3, 6, 9 (distance 3 apart)")
+        t.val(d, 2, "0 2 4 6", "direction (0,0,2) without Distance: copies 2 apart, Z = 0, 2, 4, 6 (the length of the direction is the spacing)")
         t.val(d, 0, "0 0 0 0", "X stays 0")
         t.val(d, 1, "0 0 0 0", "Y stays 0")
-        # direction (1,1,0), distance sqrt 2: step (1,1,0); start (1,-2,5): (1,-2,5), (2,-1,5), (3,0,5)
-        lb = g.node("Linear Array", None, None, S2, ("i", 3)); g.wire(t.pt(1, -2, 5), 0, lb, 0); g.wire(t.vec(1, 1, 0), 0, lb, 1)
+        lb = lin((0, 0, 0), (1, 1, 0), 3)
+        for i, p in enumerate(((0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 2.0, 0.0))):
+            at(lb, i, p, "copy %d along (1,1,0), a step of length sqrt 2" % i)
+        lc = lin((1, 2, 3), (-1, 0.5, 0), 3)
+        for i, p in enumerate(((1.0, 2.0, 3.0), (0.0, 2.5, 3.0), (-1.0, 3.0, 3.0))):
+            at(lc, i, p, "copy %d of (1,2,3) along (-1,0.5,0)" % i)
+        ld = lin((0, 0, 0), (3, 4, 0), 3)
+        # (3,4,0) has length 5, so the copies are 5 apart: copy 1 is at (3,4,0)
+        at(ld, 1, (3.0, 4.0, 0.0), "copy 1 along (3,4,0) is at (3,4,0): the step is the vector itself")
+        le = lin((4, 5, 6), (1, 0, 0), 1)
+        lel = g.node("List Length"); g.wire(le, 0, lel, 0); t.val(lel, 0, "1", "count 1 gives just the original")
+        de = g.node("Deconstruct Point"); g.wire(le, 0, de, 0); t.val(de, 0, "4", "the single copy is the original: X = 4")
+        t.val(de, 2, "6", "and Z = 6")
+        # Distance, when given, replaces the spacing: the direction is unitized and copy i moves i * Distance
+        lf = lin((0, 0, 0), (0, 0, 2), 4, 3.0)
+        df = g.node("Deconstruct Point"); g.wire(lf, 0, df, 0)
+        t.val(df, 2, "0 3 6 9", "with Distance 3 the direction (0,0,2) is unitized: copies 3 apart, Z = 0, 3, 6, 9")
+        lg = lin((1, -2, 5), (1, 1, 0), 3, S2)
         for i, p in enumerate(((1.0, -2.0, 5.0), (2.0, -1.0, 5.0), (3.0, 0.0, 5.0))):
-            li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(lb, 0, li, 0)
-            t.comps(li, p, "copy %d along (1,1,0) with step length sqrt 2" % i)
-        lc = g.node("Linear Array", None, None, 7.0, ("i", 1)); g.wire(t.pt(4, 5, 6), 0, lc, 0); g.wire(t.vec(1, 0, 0), 0, lc, 1)
-        lcl = g.node("List Length"); g.wire(lc, 0, lcl, 0); t.val(lcl, 0, "1", "count 1 gives just the original")
-        dc = g.node("Deconstruct Point"); g.wire(lc, 0, dc, 0); t.val(dc, 0, "4", "the single copy is the original: X = 4")
-        t.val(dc, 2, "6", "and Z = 6")
-        # negative distance runs against the direction
-        ld = g.node("Linear Array", None, None, -2.0, ("i", 3)); g.wire(t.pt(0, 0, 0), 0, ld, 0); g.wire(t.vec(1, 0, 0), 0, ld, 1)
-        dd = g.node("Deconstruct Point"); g.wire(ld, 0, dd, 0); t.val(dd, 0, "0 -2 -4", "distance -2 along X: 0, -2, -4")
+            at(lg, i, p, "copy %d along (1,1,0) with Distance sqrt 2" % i)
+        lh = lin((0, 0, 0), (1, 0, 0), 3, -2.0)
+        dh = g.node("Deconstruct Point"); g.wire(lh, 0, dh, 0); t.val(dh, 0, "0 -2 -4", "Distance -2 along X runs against the direction: 0, -2, -4")
     row("ghxlinarr", "D8-GH-XFORM-0015", "Linear Array",
-        "copy i sits at p + i * distance * unit(direction): (0,0,0) with direction (0,0,2), distance 3, count 4 -> Z = 0 3 6 9; (1,-2,5) with direction (1,1,0), distance sqrt 2, count 3 -> (1,-2,5), (2,-1,5), (3,0,5); count 1 is the original; distance -2 along X -> 0 -2 -4", b_linarr)
+        "copy i sits at p + i * direction, so the length of the direction vector is the spacing: (0,0,0) with direction (0,0,2), count 4 -> Z = 0 2 4 6; direction (1,1,0), count 3 -> (0,0,0), (1,1,0), (2,2,0); (1,2,3) along (-1,0.5,0) -> (1,2,3), (0,2.5,3), (-1,3,3); direction (3,4,0): copy 1 at (3,4,0); count 1 is the original. The optional Distance replaces the spacing (direction unitized): (0,0,2) with Distance 3 -> Z = 0 3 6 9; (1,-2,5) along (1,1,0) with Distance sqrt 2 -> (1,-2,5), (2,-1,5), (3,0,5); Distance -2 along X -> 0 -2 -4", b_linarr)
 
     def b_polarr(t):
         g = t.g
+        g.FORMAT = "dflow2"
 
-        def pa(p, plane, count, ang=360.0):
-            n = g.node("Polar Array", None, None, ("i", count), float(ang)); g.wire(t.pt(*p), 0, n, 0); g.wire(plane, 0, n, 1)
+        def pa(p, plane, count, ang=None):
+            n = g.node("Polar Array", None, None, ("i", count), ang); g.wire(t.pt(*p), 0, n, 0); g.wire(plane, 0, n, 1)
             return n
         xy = g.node("XY Plane", None); g.wire(t.pt(0, 0, 0), 0, xy, 0)
+        # no Angle given: the default is a full circle, 2 pi radians
         a = pa((2, 0, 0), xy, 4)
         ln = g.node("List Length"); g.wire(a, 0, ln, 0); t.val(ln, 0, "4", "count 4 gives 4 copies")
         for i, p in enumerate(((2.0, 0.0, 0.0), (0.0, 2.0, 0.0), (-2.0, 0.0, 0.0), (0.0, -2.0, 0.0))):
             li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(a, 0, li, 0)
-            t.comps(li, p, "copy %d of (2,0,0) in 4 steps of 90 degrees" % i)
-        b = pa((1, 0, 0), xy, 3)
+            t.comps(li, p, "copy %d of (2,0,0) in 4 steps of pi/2 (the default Angle is a full circle)" % i)
+        # a typed Angle of 2 pi is the same full circle
+        b = pa((1, 0, 0), xy, 3, 2 * PI)
         for i, p in enumerate(((1.0, 0.0, 0.0), (-0.5, S3 / 2), (-0.5, -S3 / 2))):
             li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(b, 0, li, 0)
-            t.comps(li, (p[0], p[1], 0.0), "copy %d of (1,0,0) in 3 steps of 120 degrees: (cos, sin)" % i)
+            t.comps(li, (p[0], p[1], 0.0), "copy %d of (1,0,0) in 3 steps of 2 pi/3 with Angle 2 pi: (cos, sin)" % i)
         cpl = g.node("XY Plane", None); g.wire(t.pt(1, 1, 0), 0, cpl, 0)
-        c = pa((2, 1, 0), cpl, 2)
+        c = pa((2, 1, 0), cpl, 2, 2 * PI)
         li = g.node("List Item", None, ("i", 1), ("b", False)); g.wire(c, 0, li, 0)
-        t.comps(li, (0.0, 1.0, 0.0), "about (1,1,0) with 2 copies the second is the point turned 180 degrees: (0,1,0)")
+        t.comps(li, (0.0, 1.0, 0.0), "about (1,1,0) with 2 copies the second is the point turned by pi: (0,1,0)")
         # about the X axis (plane normal (1,0,0)): (0,1,0) -> (0,0,1) -> (0,-1,0) -> (0,0,-1)
         nx = g.node("Plane Normal"); g.wire(t.pt(0, 0, 0), 0, nx, 0); g.wire(t.vec(1, 0, 0), 0, nx, 1)
-        e = pa((0, 1, 0), nx, 4)
+        e = pa((0, 1, 0), nx, 4, 2 * PI)
         for i, p in enumerate(((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0))):
             li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(e, 0, li, 0)
             t.comps(li, p, "copy %d about the X axis" % i)
@@ -471,7 +522,7 @@ def make_rows():
             dd = g.node("Distance"); g.wire(l0, 0, dd, 0); g.wire(l1, 0, dd, 1)
             t.exact(dd, 0, 1.0, "hexagon: copies %d and %d are 1 apart (side of the regular hexagon of circumradius 1)" % (i, (i + 1) % 6))
     row("ghxpolarr", "D8-GH-XFORM-0017", "Polar Array",
-        "a full circle in N equal steps of 360/N degrees, copy i at angle 360 i / N (counter-clockwise about the plane normal): (2,0,0) in 4 steps -> (2,0,0), (0,2,0), (-2,0,0), (0,-2,0); (1,0,0) in 3 steps -> (cos 120, sin 120) = (-1/2, sqrt 3 / 2) and (-1/2, -sqrt 3 / 2); about (1,1,0) with 2 copies (2,1,0) -> (0,1,0); about the X axis (0,1,0) -> (0,0,1) -> (0,-1,0) -> (0,0,-1); 6 steps of (1,0,0): neighbours are 1 apart (regular hexagon, side = circumradius)", b_polarr)
+        "the default Angle is a full circle of 2 pi RADIANS: N copies in equal steps of 2 pi / N, copy i at angle 2 pi i / N (counter-clockwise about the plane normal): (2,0,0) in 4 steps -> (2,0,0), (0,2,0), (-2,0,0), (0,-2,0); (1,0,0) in 3 steps with Angle 2 pi -> (cos 120 deg, sin 120 deg) = (-1/2, sqrt 3 / 2) and (-1/2, -sqrt 3 / 2); about (1,1,0) with 2 copies (2,1,0) -> (0,1,0); about the X axis (0,1,0) -> (0,0,1) -> (0,-1,0) -> (0,0,-1); 6 steps of (1,0,0): neighbours are 1 apart (regular hexagon, side = circumradius)", b_polarr)
 
     def b_orient(t):
         g = t.g
@@ -534,10 +585,19 @@ def make_rows():
         t.stats(gr, 0, "1", "6", "0", "flatten of a depth 3 tree is the same single branch {0}", mods=("flatten",))
         s = series(g, 0, 1, 4)
         t.stats(s, 0, "1", "4", "0", "flatten of a tree that is one branch {0} changes nothing", mods=("flatten",))
+        # the port can be named by its name instead of its index; a bad command is refused and changes nothing
+        sn = g.node("Tree Statistics", None); g.wire(x, 0, sn, 0); t.mod(sn, 0, "flatten", by_name=True)
+        t.val(sn, 2, "1", "flatten set through the port name Tree: one branch")
+        t.cmds.append("GrasshopperPort %d 0 Sideways" % sn)
+        t.lines.append(("GrasshopperPort: unknown modifier 'Sideways'", "an unknown modifier is refused with a message"))
+        t.cmds.append("GrasshopperPort 9999 0 Flatten")
+        t.lines.append(("GrasshopperPort: no node #9999", "a node id that does not exist is refused"))
+        t.cmds.append("GrasshopperPort %d 7 Flatten" % sn)
+        t.lines.append(("GrasshopperPort: Tree Statistics has no input 7", "an input index that does not exist is refused"))
         # the same graph with the modifier on a DIFFERENT input does not flatten this one: Tree Statistics has one input, so the decoy
         # is the unmodified statistic above (3 branches), not 1.
     row("ghtflat", "D8-GH-TREES-0009", "Flatten parameter modifier",
-        "flatten puts every item in one branch {0}: 0..5 cut in pairs is 3 branches {0;0} {0;1} {0;2} of 2 items (paths 0 0, 0 1, 0 2); flattened it is 1 branch of 6 with path {0}; a grafted (depth 3) copy flattens to the same; a tree that already is the single branch {0} stays", b_tflat)
+        "flatten puts every item in one branch {0}: 0..5 cut in pairs is 3 branches {0;0} {0;1} {0;2} of 2 items (paths 0 0, 0 1, 0 2); flattened it is 1 branch of 6 with path {0}; a grafted (depth 3) copy flattens to the same; a tree that already is the single branch {0} stays; the modifier is set the way a user sets it, on the input port (the GrasshopperPort command, which shares its code with the node editor's right-click port menu), by index or by port name, and a bad modifier, node or input is refused", b_tflat)
 
     def b_tgraft(t):
         g = t.g
@@ -548,6 +608,11 @@ def make_rows():
         t.stats(x, 0, "6", "1 1 1 1 1 1", "0 0 0 0 0 1 0 1 0 0 1 1 0 2 0 0 2 1", "graft of a 3 branch tree: path {a;b} and item i give {a;b;i}", mods=("graft",))
         e = series(g, 0, 1, 0)
         t.stats(e, 0, "0", "", None, "graft of an empty list: no branches", mods=("graft",))
+        # Flatten and Graft exclude each other: the one set last wins (the port reports G, then F)
+        sg = g.node("Tree Statistics", None); g.wire(x, 0, sg, 0); t.mod(sg, 0, "flatten"); t.mod(sg, 0, "graft")
+        t.val(sg, 2, "6", "flatten then graft on one port: graft wins, 6 branches")
+        sf = g.node("Tree Statistics", None); g.wire(x, 0, sf, 0); t.mod(sf, 0, "graft"); t.mod(sf, 0, "flatten")
+        t.val(sf, 2, "1", "graft then flatten on one port: flatten wins, 1 branch")
     row("ghtgraft", "D8-GH-TREES-0010", "Graft parameter modifier",
         "graft appends the item's index to its branch path: one list of 4 at {0} -> {0;0} {0;1} {0;2} {0;3} (4 branches of 1 item); the tree {0;0} {0;1} {0;2} of 2 items each -> {0;0;0} {0;0;1} {0;1;0} {0;1;1} {0;2;0} {0;2;1} (6 branches of 1); an empty list has no branches; without the modifier the list stays one branch of 4", b_tgraft)
 
@@ -583,10 +648,55 @@ def make_rows():
         t.val(m3, 0, "2 1 0 5 4 3", "reverse works on each branch: 2 1 0 and 5 4 3 (not 5 4 3 2 1 0)")
         # the modifier is per input: reversing B only
         s2 = series(g, 10, 10, 3)
-        m4 = g.node("Merge", None, None); g.wire(s, 0, m4, 0); g.wire(s2, 0, m4, 1); t.mod(m4, 1, "reverse")
-        t.val(m4, 0, "1 2 3 4 5 30 20 10", "reverse on B only: A as is, then 30 20 10")
+        m4 = g.node("Merge", None, None); g.wire(s, 0, m4, 0); g.wire(s2, 0, m4, 1); t.mod(m4, 1, "reverse", by_name=True)
+        t.val(m4, 0, "1 2 3 4 5 30 20 10", "reverse on B only (set by the port name B): A as is, then 30 20 10")
+        # Toggle and Off take the modifier away again
+        m5 = g.node("Merge", None, None); g.wire(s, 0, m5, 0); t.mod(m5, 0, "reverse"); t.mod(m5, 0, "reverse", "Toggle")
+        t.val(m5, 0, "1 2 3 4 5", "reverse switched on and then toggled: off again, the list as it is")
+        m6 = g.node("Merge", None, None); g.wire(s, 0, m6, 0); t.mod(m6, 0, "reverse"); t.mod(m6, 0, "reverse", "Off")
+        t.val(m6, 0, "1 2 3 4 5", "reverse switched on and then off: the list as it is")
+        m7 = g.node("Merge", None, None); g.wire(s, 0, m7, 0); t.mod(m7, 0, "reverse", "Toggle")
+        t.val(m7, 0, "5 4 3 2 1", "reverse toggled from off: on")
     row("ghtrev", "D8-GH-TREES-0012", "Reverse parameter modifier",
         "reverse turns each branch's list back to front: 1 2 3 4 5 -> 5 4 3 2 1; two branches 0 1 2 | 3 4 5 -> 2 1 0 | 5 4 3 (the branches keep their order); it is a property of one input: Merge(1..5, reversed 10 20 30) = 1 2 3 4 5 30 20 10", b_trev)
+
+    # ================================================================ files written before the unit change
+    def b_migrate(t):
+        """A "dflow1" file was written when Rotate and Polar Array took degrees and Linear Array a Distance (default 5) on the unitized
+        direction. Loading one must keep it doing what it did: typed angles become radians, an angle driven by a wire gets a
+        Radians node (degrees -> radians) put in the wire, an unset Linear Array Distance becomes the old 5. The expected values
+        below are what the OLD meanings give, worked out in degrees; the "dflow2" sections GHXROT, GHXPOLARR and GHXLINARR
+        carry the new meanings of the same nodes, so a migration applied to every file would fail them."""
+        g = t.g
+        g.FORMAT = "dflow1"
+
+        def at(n, i, p, msg):
+            li = g.node("List Item", None, ("i", i), ("b", False)); g.wire(n, 0, li, 0)
+            t.comps(li, p, msg)
+        r1 = g.node("Rotate", None, 90.0); g.wire(t.pt(1, 0, 0), 0, r1, 0)
+        t.comps(r1, (0.0, 1.0, 0.0), "legacy Rotate with a typed Angle 90: a quarter turn (90 degrees)")
+        r2 = g.node("Rotate"); g.wire(t.pt(1, 0, 0), 0, r2, 0)
+        t.comps(r2, (S2 / 2, S2 / 2, 0.0), "legacy Rotate with no Angle typed: the old default 45 degrees")
+        r3 = g.node("Rotate"); g.wire(t.pt(2, 0, 0), 0, r3, 0); g.wire(series(g, 45, 0, 1), 0, r3, 1)
+        t.extra_nodes += 1
+        t.comps(r3, (S2, S2, 0.0), "legacy Rotate with the Angle wired from a node giving 45: 45 degrees (a Radians node is put in the wire)")
+        p1 = g.node("Polar Array", None, None, ("i", 3), 180.0); g.wire(t.pt(1, 0, 0), 0, p1, 0)
+        for i, p in enumerate(((1.0, 0.0, 0.0), (0.5, S3 / 2, 0.0), (-0.5, S3 / 2, 0.0))):
+            at(p1, i, p, "legacy Polar Array, typed Angle 180, 3 copies: copy %d at 60 degrees times %d" % (i, i))
+        p2 = g.node("Polar Array", None, None, ("i", 4)); g.wire(t.pt(2, 0, 0), 0, p2, 0)
+        for i, p in enumerate(((2.0, 0.0, 0.0), (0.0, 2.0, 0.0), (-2.0, 0.0, 0.0), (0.0, -2.0, 0.0))):
+            at(p2, i, p, "legacy Polar Array with no Angle typed (the old default 360 degrees): copy %d of 4 is a quarter turn times %d" % (i, i))
+        p3 = g.node("Polar Array", None, None, ("i", 2)); g.wire(t.pt(1, 0, 0), 0, p3, 0); g.wire(series(g, 180, 0, 1), 0, p3, 3)
+        t.extra_nodes += 1
+        at(p3, 1, (0.0, 1.0, 0.0), "legacy Polar Array, Angle wired from a node giving 180, 2 copies: the second at 90 degrees (a Radians node is put in the wire)")
+        l1 = g.node("Linear Array", None, None, None, ("i", 3)); g.wire(t.pt(0, 0, 0), 0, l1, 0); g.wire(t.vec(0, 0, 2), 0, l1, 1)
+        d1 = g.node("Deconstruct Point"); g.wire(l1, 0, d1, 0)
+        t.val(d1, 2, "0 5 10", "legacy Linear Array with no Distance typed: the old default 5 on the unitized direction (0,0,2): Z = 0, 5, 10 (not 0, 2, 4)")
+        l2 = g.node("Linear Array", None, None, 3.0, ("i", 3)); g.wire(t.pt(0, 0, 0), 0, l2, 0); g.wire(t.vec(0, 0, 2), 0, l2, 1)
+        d2 = g.node("Deconstruct Point"); g.wire(l2, 0, d2, 0)
+        t.val(d2, 2, "0 3 6", "legacy Linear Array with a typed Distance 3: Z = 0, 3, 6")
+    row("ghxmigrate", "D8-GH-XFORM-0008, D8-GH-XFORM-0015, D8-GH-XFORM-0017", "Rotate, Linear Array, Polar Array: migration of dflow1 files",
+        "an older file ('format' dflow1) keeps its old meanings: Rotate typed 90 is a quarter turn (0,1,0); Rotate untyped is 45 degrees (sqrt 2 / 2, sqrt 2 / 2); a Rotate angle wired from a node giving 45 is 45 degrees; Polar Array typed 180 with 3 copies at 0, 60, 120 degrees; untyped it is a full circle (quarter turns for 4 copies); an angle wired from a node giving 180 with 2 copies puts the second at 90 degrees; Linear Array without a Distance spaces 5 apart along the unitized direction (Z = 0 5 10), with Distance 3 Z = 0 3 6", b_migrate)
 
     # ================================================================ Sets > Tree
     def b_stats(t):
@@ -728,13 +838,19 @@ def main():
         with open(os.path.join(HERE, "flowrows_%s.dflow" % name), "w") as f:
             f.write(t.g.text())
         with open(os.path.join(HERE, "flowrows_%s_script.txt" % name), "w") as f:
-            f.write("# Flow Register row %s (%s): player + bake, read back by sections/104_%s.sh (see flowrows6_gen.py)\n"
-                    "Grasshopper\nGrasshopperPlayer @GRAPH@ Bake=Yes\n@expect_objects %d\nSelAll\nList\n" % (rid, title, name, nobj))
+            if t.cmds:
+                # parameter modifiers are set on the loaded graph through the GrasshopperPort command, then the graph is re-solved and baked
+                f.write("# Flow Register row %s (%s): load, set the port modifiers, re-solve and bake, read back by sections/104_%s.sh (see flowrows6_gen.py)\n"
+                        "Grasshopper\nGrasshopperPlayer @GRAPH@ Bake=No\n%s\nGrasshopperUpdateBakes\n@expect_objects %d\nSelAll\nList\n" % (rid, title, name, "\n".join(t.cmds), nobj))
+                t.lines.append(("with %d freshly-solved object(s)" % nobj, "the re-solve baked exactly %d object(s)" % nobj))
+            else:
+                f.write("# Flow Register row %s (%s): player + bake, read back by sections/104_%s.sh (see flowrows6_gen.py)\n"
+                        "Grasshopper\nGrasshopperPlayer @GRAPH@ Bake=Yes\n@expect_objects %d\nSelAll\nList\n" % (rid, title, name, nobj))
         checks = [('fr_chk %d "%s" "%s"' % (tag, vals, msg.replace('"', "'"))) for tag, vals, msg in t.expect]
         for text, msg in t.lines:
             checks.append('fr_has "%s" "%s"' % (text.replace('"', '\\"'), msg.replace('"', "'")))
         checks.append('fr_cnt "flagged:" %d "flagged: exactly %d node(s) are flagged" ' % (t.flagged, t.flagged))
-        text = template.format(up=name.upper(), rid=rid, title=title, name=name, closed=closed, nn=len(t.g.nodes), nobj=nobj, checks="\n".join(checks))
+        text = template.format(up=name.upper(), rid=rid, title=title, name=name, closed=closed, nn=len(t.g.nodes) + t.extra_nodes, nobj=nobj, checks="\n".join(checks))
         with open(os.path.join(HERE, "sections", "104_%s.sh" % name), "w") as f:
             f.write(text)
         print(name, rid, "nodes", len(t.g.nodes), "objects", nobj, "checks", len(checks))

@@ -184,6 +184,9 @@ class Node {
   Tree& Output(int i) { return outputs[static_cast<size_t>(i)].data; }
 };
 
+// The modifiers set on a port as letters, in the order they are applied: R(everse) F(latten) G(raft) S(implify); "" when none.
+std::string PortModifierLetters(const Port& p);
+
 struct Wire {
   NodeId from = kNoNode;
   int from_port = 0;
@@ -211,6 +214,11 @@ class Graph {
   // Connects (replacing an existing wire into the same input); false when
   // it would create a cycle or types are incompatible.
   bool Connect(NodeId from, int from_port, NodeId to, int to_port);
+  // Parameter modifiers of an input port: `modifier` is Reverse, Flatten, Graft or Simplify (any case); mode 0 = off, 1 = on, 2 = toggle.
+  // Flatten and Graft exclude each other (switching one on switches the other off), as GatherInput applies at most one of them.
+  // Marks the node and everything downstream dirty. The editor's port menu and the GrasshopperPort command both come through here.
+  // Returns false with `error` set for an unknown node, port or modifier.
+  bool SetPortModifier(NodeId node, int port, const std::string& modifier, int mode, std::string& error);
   void Disconnect(NodeId to, int to_port);
   void DisconnectAll(NodeId node);
   bool WouldCycle(NodeId from, NodeId to) const;
@@ -255,6 +263,7 @@ class Graph {
 
  private:
   void Evaluate(Node& n, app::Document* doc);
+  void MigrateDflow1(const std::vector<NodeId>& ids);
   void GatherInput(Node& n, int port, Tree& out);
   std::vector<std::unique_ptr<Node>> nodes_;
   std::vector<Wire> wires_;
