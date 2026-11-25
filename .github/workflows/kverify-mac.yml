@@ -1,0 +1,172 @@
+name: Kvmac (replay of the macOS and Windows-on-ARM app jobs)
+on:
+  push:
+    branches: ['kvlite/mac-**']
+env:
+  BUILD_TYPE: Release
+permissions:
+  contents: read
+jobs:
+  windows-arm:
+    name: Windows on ARM (build, portable zip)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    env:
+      # See the x64 job: which Authenticode method the configured secrets allow.
+      WINDOWS_SIGN_METHOD: none
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Configure (Ninja + MSVC arm64)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCPACK_SYSTEM_NAME=win-arm64
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      # Same self-containment gate as the x64 job (see its comment).
+      - name: Dependents check (exe imports only OS DLLs)
+        shell: pwsh
+        run: |
+          $out = & dumpbin /NOLOGO /DEPENDENTS dino8-app\build\Dino8.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
+          Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          # Denylist, see the x64 job's own "Dependents check" step for why
+          # (an allowlist here already broke a real build once, on the
+          # legitimate dwrite.dll).
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the portable zip does not ship: $($bad -join ', ')" }
+      # Same optional Authenticode signing as the x64 job (inert, event-gated,
+      # verified); signs the exe before the portable zip is cut from it.
+      - name: Sign Dino8.exe (Authenticode)
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-arm-exe
+          files: dino8-app/build/Dino8.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-arm64
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+  macos:
+    name: macOS (build, .dmg)
+    runs-on: macos-15
+    env:
+      HAS_APPLE_CERT: 'false'
+      HAS_APPLE_NOTARY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build dino8-app/build
+      # NOT run here (Linux and Windows both run the same tests/smoke.sh
+      # QC suite): GitHub's macos-14 Actions runner cannot create a native
+      # GLFW/OpenGL window at all - "GLFW error 65545: NSGL: Failed to
+      # find a suitable pixel format" persists even for the simplest
+      # possible 3.3 core request (0 samples, no other hints), confirmed
+      # by two separate attempts (one dropping 4x MSAA first, suspecting
+      # that was the cause; it was not). This is a documented, systemic
+      # limitation of GitHub's hosted macOS runners' virtualized/no-GPU
+      # environment for any app requesting a native NSGL context - not
+      # something fixable by more Dino 8 code, unlike Windows (which has
+      # no GPU either, but a real fix exists: Mesa's llvmpipe software
+      # OpenGL can fully replace opengl32.dll since Windows' WGL/GDI model
+      # allows a drop-in software implementation; macOS's NSGL model
+      # brokers pixel formats through the OS/WindowServer itself with no
+      # equivalent drop-in swap available). ctest's own kernel/geometry
+      # unit tests above still give real coverage on this platform.
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure
+      # Developer ID signing + notarization. Inert until the Apple secrets exist:
+      # every step below is skipped (and the .dmg stays exactly as CPack made it)
+      # when HAS_APPLE_CERT is not 'true', and none of them ever runs for a
+      # pull_request event. See docs/CODE_SIGNING.md for the exact secret names.
+      #
+      # NOTE the order: the app is signed INSIDE the .dmg after `cpack`, not in
+      # the build tree before it. CPack's DragNDrop generator stages its own
+      # fresh copy of the app, so a signature applied to build/Dino8.app was
+      # never part of the shipped image (see packaging/macos/sign-dmg.sh).
+      - name: Package
+        run: cd dino8-app/build && cpack
+      - name: Import Developer ID certificate
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/dino8-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/dino8-signing.keychain-db"
+          echo -n "$APPLE_CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+      - name: Code-sign the app inside the disk image (hardened runtime)
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          dino8-app/packaging/macos/sign-dmg.sh sign "$DMG"
+      # Apple refuses to notarize an unsigned bundle, so this additionally needs
+      # the signing step above. Without the three notary secrets the image is
+      # signed but NOT notarized (Gatekeeper will still warn).
+      - name: Notarize and staple the disk image
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          dino8-app/packaging/macos/sign-dmg.sh notarize "$DMG"
+      - name: Warn - signed but not notarized
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY != 'true' }}
+        run: echo "::warning::The .dmg is Developer-ID signed but NOT notarized (APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD missing). Gatekeeper will still warn users."
+      - name: Remove the temporary signing keychain
+        if: ${{ always() && github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        run: security delete-keychain "$RUNNER_TEMP/dino8-signing.keychain-db" || true
+      # Ad-hoc signing SELF-TEST (no certificate, no secret, every event
+      # including pull requests): runs the real packaging/macos/sign-dmg.sh in
+      # `adhoc` mode (codesign --sign -) on a COPY of the .dmg, then requires
+      # `codesign --verify --deep --strict` to pass, `codesign -dv` to say
+      # Signature=adhoc, and a tampered copy to FAIL verification. The .dmg
+      # uploaded below is not touched. NOT Developer ID signing and NOT
+      # notarization: notarization is skipped because it needs Apple
+      # credentials. See docs/CODE_SIGNING.md "What CI proves today".
+      - name: macOS ad-hoc signing self-test (copy of the .dmg; not Developer ID, not notarized)
+        run: |
+          echo "::notice title=macOS signing self-test::Ad-hoc signature on a COPY of the disk image to prove the sign-dmg.sh code path and tamper detection. Not Developer ID, not notarized (no Apple credentials); the published .dmg is unaffected."
+          dino8-app/packaging/macos/test-adhoc-signing.sh "$(ls dino8-app/build/*.dmg | head -1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-macos
+          path: dino8-app/build/*.dmg
+          if-no-files-found: error
+
