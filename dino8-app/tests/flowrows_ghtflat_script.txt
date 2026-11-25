@@ -1,6 +1,14 @@
-# Flow Register row D8-GH-TREES-0009 (Flatten parameter modifier): player + bake, read back by sections/104_ghtflat.sh (see flowrows6_gen.py)
+# Flow Register row D8-GH-TREES-0009 (Flatten parameter modifier): load, set the port modifiers, re-solve and bake, read back by sections/104_ghtflat.sh (see flowrows6_gen.py)
 Grasshopper
-GrasshopperPlayer @GRAPH@ Bake=Yes
-@expect_objects 20
+GrasshopperPlayer @GRAPH@ Bake=No
+GrasshopperPort 11 0 Flatten On
+GrasshopperPort 20 0 Flatten On
+GrasshopperPort 29 0 Flatten On
+GrasshopperPort 37 Tree Flatten On
+GrasshopperPort 37 0 Sideways
+GrasshopperPort 9999 0 Flatten
+GrasshopperPort 37 7 Flatten
+GrasshopperUpdateBakes
+@expect_objects 21
 SelAll
 List

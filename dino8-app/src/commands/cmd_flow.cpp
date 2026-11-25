@@ -159,6 +159,37 @@ void RegisterFlowCommands(CommandEngine& e) {
         }
       }));
 
+  // GrasshopperPort <node id> <input index or name> <Reverse|Flatten|Graft|Simplify> [On|Off|Toggle]: the headless twin of the node editor's
+  // right-click menu on an input port; both go through flow::Graph::SetPortModifier. The graph is re-solved by the next
+  // GrasshopperUpdateBakes (or the editor's own solve).
+  Reg(e, "GrasshopperPort", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.size() < 3) { ctx.Warn("GrasshopperPort: usage GrasshopperPort <node id> <input index or name> <Reverse|Flatten|Graft|Simplify> [On|Off|Toggle]"); return; }
+        flow::Graph& g = flow::Editor::Get().graph;
+        char* end = nullptr;
+        const long id = std::strtol(toks[0].c_str(), &end, 10);
+        if (end == toks[0].c_str() || *end != '\0' || id <= 0) { ctx.Warn("GrasshopperPort: '" + toks[0] + "' is not a node id"); return; }
+        flow::Node* n = g.Find(static_cast<flow::NodeId>(id));
+        if (!n) { ctx.Warn("GrasshopperPort: no node #" + toks[0]); return; }
+        int port = -1;
+        const long idx = std::strtol(toks[1].c_str(), &end, 10);
+        if (end != toks[1].c_str() && *end == '\0') port = static_cast<int>(idx);
+        else for (size_t i = 0; i < n->inputs.size(); ++i) if (LowerStr(n->inputs[i].name) == LowerStr(toks[1])) port = static_cast<int>(i);
+        int mode = 1;
+        if (toks.size() > 3) {
+          const std::string m = LowerStr(toks[3]);
+          if (m == "on") mode = 1; else if (m == "off") mode = 0; else if (m == "toggle") mode = 2;
+          else { ctx.Warn("GrasshopperPort: '" + toks[3] + "' is not On, Off or Toggle"); return; }
+        }
+        std::string error;
+        g.Snapshot();
+        if (!g.SetPortModifier(n->id, port, toks[2], mode, error)) { ctx.Warn("GrasshopperPort: " + error); return; }
+        const flow::Port& p = n->inputs[static_cast<size_t>(port)];
+        const std::string letters = flow::PortModifierLetters(p);
+        ctx.Print("GrasshopperPort: " + n->type + " (#" + std::to_string(n->id) + ") input " + std::to_string(port) + " " + p.name + " modifiers: " + (letters.empty() ? "none" : letters));
+      }));
+
   Reg(e, "GrasshopperUpdateBakes", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);

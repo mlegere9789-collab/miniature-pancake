@@ -1,6 +1,7 @@
 #include "flow/FlowGraph.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <limits>
@@ -82,6 +83,33 @@ bool Graph::Remove(NodeId id) {
   nodes_.erase(std::remove_if(nodes_.begin(), nodes_.end(), [&](const std::unique_ptr<Node>& n) { return n->id == id; }), nodes_.end());
   if (nodes_.size() != before) { SetModified(); return true; }
   return false;
+}
+
+bool Graph::SetPortModifier(NodeId node, int port, const std::string& modifier, int mode, std::string& error) {
+  Node* n = Find(node);
+  if (!n) { error = "no node #" + std::to_string(node); return false; }
+  if (port < 0 || port >= static_cast<int>(n->inputs.size())) { error = n->type + " has no input " + std::to_string(port); return false; }
+  std::string m;
+  for (char ch : modifier) m += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  Port& p = n->inputs[static_cast<size_t>(port)];
+  bool* flag = m == "reverse" ? &p.reverse : m == "flatten" ? &p.flatten : m == "graft" ? &p.graft : m == "simplify" ? &p.simplify : nullptr;
+  if (!flag) { error = "unknown modifier '" + modifier + "' (Reverse, Flatten, Graft or Simplify)"; return false; }
+  const bool value = mode == 2 ? !*flag : mode != 0;
+  *flag = value;
+  if (value && flag == &p.flatten) p.graft = false;
+  if (value && flag == &p.graft) p.flatten = false;
+  MarkDirty(node);
+  SetModified();
+  return true;
+}
+
+std::string PortModifierLetters(const Port& p) {
+  std::string s;
+  if (p.reverse) s += 'R';
+  if (p.flatten) s += 'F';
+  if (p.graft) s += 'G';
+  if (p.simplify) s += 'S';
+  return s;
 }
 
 const Wire* Graph::WireInto(NodeId to, int to_port) const {
@@ -622,7 +650,7 @@ Value ReadValue(const json::Value& j) {
 
 std::string Graph::ToJson(const std::vector<NodeId>* only) const {
   std::ostringstream os;
-  os << "{\"format\":\"dflow1\",\"nodes\":[";
+  os << "{\"format\":\"dflow2\",\"nodes\":[";
   bool first = true;
   for (const auto& n : nodes_) {
     if (only && std::find(only->begin(), only->end(), n->id) == only->end()) continue;
@@ -715,9 +743,48 @@ bool Graph::FromJson(const std::string& text, std::string& error, bool merge, fl
     if (fi == remap.end() || ti == remap.end()) continue;
     Connect(fi->second, static_cast<int>(jw["fp"].number), ti->second, static_cast<int>(jw["tp"].number));
   }
+  // "dflow1" files (written before the Grasshopper transform components took radians and the Linear Array spacing from the
+  // Direction vector) are migrated so that they keep doing what they did: see MigrateDflow1 above FromJson.
+  if (root["format"].AsString("dflow1") == "dflow1") {
+    std::vector<NodeId> ids;
+    for (const auto& kv : remap) ids.push_back(kv.second);
+    std::sort(ids.begin(), ids.end());
+    MigrateDflow1(ids);
+  }
   MarkAllDirty();
   SetModified();
   return true;
+}
+
+// Rotate and Polar Array used to take their Angle in degrees (Rotate default 45, Polar Array default 360) and Linear Array took
+// its spacing from a Distance input (default 5) applied to the unitized Direction. They now take radians and the length of
+// Direction. A "dflow1" file means the old meanings, so on load: a typed Angle is converted to radians; an Angle driven by a
+// wire gets a Radians node (degrees -> radians) put in the wire; an unset Linear Array Distance becomes the old default 5
+// (which, being given, still unitizes the direction). The defaults of the angles need no change (45 degrees = pi / 4, 360 = 2 pi).
+void Graph::MigrateDflow1(const std::vector<NodeId>& ids) {
+  for (NodeId id : ids) {
+    Node* n = Find(id);
+    if (!n) continue;
+    int angle_port = -1;
+    if (n->type == "Rotate") angle_port = 1;
+    else if (n->type == "Polar Array") angle_port = 3;
+    if (angle_port >= 0 && angle_port < static_cast<int>(n->inputs.size())) {
+      if (const Wire* w = WireInto(id, angle_port)) {
+        const Wire old = *w;
+        if (Node* r = Add("Radians", n->x - 150.0f, n->y + 18.0f * static_cast<float>(angle_port))) {
+          if (Connect(old.from, old.from_port, r->id, 0)) Connect(r->id, 0, id, angle_port);
+          else Remove(r->id);
+        }
+      } else if (n->inputs[static_cast<size_t>(angle_port)].has_user_value) {
+        Value& v = n->inputs[static_cast<size_t>(angle_port)].user_value;
+        double deg;
+        if (v.AsNumber(deg)) v = Value::Number(deg * 3.14159265358979323846 / 180.0);
+      }
+    } else if (n->type == "Linear Array" && n->inputs.size() > 2) {
+      Port& dist = n->inputs[2];
+      if (!WireInto(id, 2) && !dist.has_user_value) { dist.user_value = Value::Number(5); dist.has_user_value = true; }
+    }
+  }
 }
 
 bool Graph::SaveFile(const std::string& file_path, std::string& error) const {

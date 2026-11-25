@@ -342,6 +342,13 @@ void Editor::DrawCanvas(app::Application& app) {
     }
   }
 
+  // Right-click on an input port: its parameter-modifier menu (the popup is drawn at the end of the canvas).
+  if (canvas_hovered_ && hovered_input_port_node != kNoNode && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    port_menu_node_ = hovered_input_port_node;
+    port_menu_port_ = hovered_input_port;
+    ImGui::OpenPopup("dflow_port_mods");
+  }
+
   // Double-click / right-click empty canvas: node search.
   if (canvas_hovered_ && (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
     bool over_node = false;
@@ -350,7 +357,7 @@ void Editor::DrawCanvas(app::Application& app) {
       const ImVec2 p1 = p0 + ImVec2(NodeWidth(*np), NodeHeight(*np)) * zoom_;
       if (mouse.x >= p0.x && mouse.x <= p1.x && mouse.y >= p0.y && mouse.y <= p1.y) over_node = true;
     }
-    if (!over_node) { search_open_ = true; search_canvas_pos_ = mouse_canvas; search_text_.clear(); search_link_node_ = kNoNode; }
+    if (!over_node && hovered_input_port_node == kNoNode) { search_open_ = true; search_canvas_pos_ = mouse_canvas; search_text_.clear(); search_link_node_ = kNoNode; }
   }
 
   // Delete / copy / paste while the canvas has focus.
@@ -374,6 +381,30 @@ void Editor::DrawCanvas(app::Application& app) {
       graph.FromJson(clipboard_, err, true, 24, 24, &created);
       for (NodeId id : created) if (Node* n = graph.Find(id)) n->selected = true;
     }
+  }
+
+  // Parameter-modifier menu of an input port (right-click on the port): each entry goes through Graph::SetPortModifier, the same
+  // function the GrasshopperPort command calls, so the menu and the command cannot drift apart.
+  if (ImGui::BeginPopup("dflow_port_mods")) {
+    Node* pn = graph.Find(port_menu_node_);
+    if (!pn || port_menu_port_ < 0 || port_menu_port_ >= static_cast<int>(pn->inputs.size())) {
+      ImGui::CloseCurrentPopup();
+    } else {
+      const Port& pp = pn->inputs[static_cast<size_t>(port_menu_port_)];
+      ImGui::TextDisabled("%s: %s", pn->type.c_str(), pp.name.c_str());
+      ImGui::Separator();
+      struct Entry { const char* name; bool on; };
+      const Entry entries[] = {{"Reverse", pp.reverse}, {"Flatten", pp.flatten}, {"Graft", pp.graft}, {"Simplify", pp.simplify}};
+      for (const Entry& en : entries) {
+        bool on = en.on;
+        if (ImGui::MenuItem(en.name, nullptr, &on)) {
+          graph.Snapshot();
+          std::string err;
+          graph.SetPortModifier(port_menu_node_, port_menu_port_, en.name, on ? 1 : 0, err);
+        }
+      }
+    }
+    ImGui::EndPopup();
   }
 
   DrawSearchPopup(app);
@@ -453,7 +484,9 @@ void Editor::DrawNode(app::Application& app, Node& n, ImDrawList* dl, ImVec2 ori
 
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     const float y = kNodeHeaderH + kPortRowH * static_cast<float>(i) + kPortRowH * 0.5f;
-    dl->AddText(origin + ImVec2(10 * zoom_, (y - 7) * zoom_), muted_text_color, n.inputs[i].name.c_str());
+    const std::string mods = PortModifierLetters(n.inputs[i]);
+    const std::string label = mods.empty() ? n.inputs[i].name : n.inputs[i].name + " [" + mods + "]";
+    dl->AddText(origin + ImVec2(10 * zoom_, (y - 7) * zoom_), muted_text_color, label.c_str());
   }
   for (size_t i = 0; i < n.outputs.size(); ++i) {
     const float y = kNodeHeaderH + kPortRowH * static_cast<float>(i) + kPortRowH * 0.5f;

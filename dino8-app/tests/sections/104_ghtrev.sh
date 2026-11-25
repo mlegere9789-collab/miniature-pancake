@@ -23,12 +23,24 @@ fr_cnt() {
   n="$({ grep -cF -- "$1" <<<"$FR_OUT" || true; })"
   if [ "$n" = "$2" ]; then echo "ok   GHTREV_$3 (measured $n)"; else echo "FAIL GHTREV_$3 (measured $n, expected $2)"; fail=1; fi
 }
-if grep -qF "GrasshopperPlayer: solved 25 node(s)" <<<"$FR_OUT"; then echo "ok   GHTREV_solve: the player solved all 25 nodes (every node type is registered)"; else echo "FAIL GHTREV_solve: expected 'solved 25 node(s)'"; fail=1; fi
-if grep -qE "^ok +expect_objects 31 " <<<"$FR_OUT"; then echo "ok   GHTREV_objects: exactly 31 point(s) baked"; else echo "FAIL GHTREV_objects: expected 31 baked objects"; fail=1; fi
+if grep -qF "GrasshopperPlayer: solved 34 node(s)" <<<"$FR_OUT"; then echo "ok   GHTREV_solve: the player solved all 34 nodes (every node type is registered)"; else echo "FAIL GHTREV_solve: expected 'solved 34 node(s)'"; fail=1; fi
+if grep -qE "^ok +expect_objects 46 " <<<"$FR_OUT"; then echo "ok   GHTREV_objects: exactly 46 point(s) baked"; else echo "FAIL GHTREV_objects: expected 46 baked objects"; fail=1; fi
 fr_chk 1 "1 2 3 4 5" "no modifier: the list as it is"
 fr_chk 2 "5 4 3 2 1" "reverse: 1..5 back to front"
 fr_chk 3 "0 1 2 3 4 5" "no modifier on two branches of 3: 0 1 2 3 4 5"
 fr_chk 4 "2 1 0 5 4 3" "reverse works on each branch: 2 1 0 and 5 4 3 (not 5 4 3 2 1 0)"
-fr_chk 5 "1 2 3 4 5 30 20 10" "reverse on B only: A as is, then 30 20 10"
-fr_chk 6 "500000000000" "control: the residual chain reports Square(2) - 4.5 as 500000000000, so the 0 values above are real matches"
+fr_chk 5 "1 2 3 4 5 30 20 10" "reverse on B only (set by the port name B): A as is, then 30 20 10"
+fr_chk 6 "1 2 3 4 5" "reverse switched on and then toggled: off again, the list as it is"
+fr_chk 7 "1 2 3 4 5" "reverse switched on and then off: the list as it is"
+fr_chk 8 "5 4 3 2 1" "reverse toggled from off: on"
+fr_chk 9 "500000000000" "control: the residual chain reports Square(2) - 4.5 as 500000000000, so the 0 values above are real matches"
+fr_has "GrasshopperPort: Merge (#5) input 0 A modifiers: R" "GrasshopperPort Reverse on Merge #5 input A: the modifiers are now 'R'"
+fr_has "GrasshopperPort: Merge (#13) input 0 A modifiers: R" "GrasshopperPort Reverse on Merge #13 input A: the modifiers are now 'R'"
+fr_has "GrasshopperPort: Merge (#17) input 1 B modifiers: R" "GrasshopperPort Reverse on Merge #17 input B: the modifiers are now 'R'"
+fr_has "GrasshopperPort: Merge (#20) input 0 A modifiers: R" "GrasshopperPort Reverse on Merge #20 input A: the modifiers are now 'R'"
+fr_has "GrasshopperPort: Merge (#20) input 0 A modifiers: none" "GrasshopperPort Reverse on Merge #20 input A: the modifiers are now '(none)'"
+fr_has "GrasshopperPort: Merge (#23) input 0 A modifiers: R" "GrasshopperPort Reverse on Merge #23 input A: the modifiers are now 'R'"
+fr_has "GrasshopperPort: Merge (#23) input 0 A modifiers: none" "GrasshopperPort Reverse on Merge #23 input A: the modifiers are now '(none)'"
+fr_has "GrasshopperPort: Merge (#26) input 0 A modifiers: R" "GrasshopperPort Reverse on Merge #26 input A: the modifiers are now 'R'"
+fr_has "with 46 freshly-solved object(s)" "the re-solve baked exactly 46 object(s)"
 fr_cnt "flagged:" 0 "flagged: exactly 0 node(s) are flagged" 
