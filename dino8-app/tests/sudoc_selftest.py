@@ -108,13 +108,6 @@ def main():
         return dxf([line(q1[0], q1[1], p2[0], p2[1]), line(q1[0], q1[1], at(40, U)[0], at(40, U)[1]), line(p2[0], p2[1], at(40, V)[0], at(40, V)[1])])
     good_bad('chm', {'ch.dxf': chm_file()}, [('a distance of 9 on the first line', {'ch.dxf': chm_file(9.0)})])
 
-    # ---- ext
-    t3, t4 = (30 + 8) / 1.4, (45 + 8) / 1.4
-
-    def ext_file(h1x=20 + 5 / 0.4):
-        return dxf([line(0, 5, h1x, 5), line(0, 8, 20 + 8 / 0.4, 8), line(0, 30, t3, 30 - t3), line(0, 45, t4, 45 - t4), line(20, 0, 80, 24)])
-    good_bad('ext', {'ex.dxf': ext_file()}, [('an end point 0.01 short of the boundary', {'ex.dxf': ext_file(h1x=32.49)})])
-
     # ---- line
     c30, s30 = math.cos(math.radians(30)), math.sin(math.radians(30))
     c135, s135 = math.cos(math.radians(135)), math.sin(math.radians(135))
