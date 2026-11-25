@@ -5,10 +5,10 @@
 # lens against the half extent of the SHORT side of the frustum, 12 mm: tan(half angle of the short side) = 12 / lens. The oracle here is therefore
 #   (a) the field of view that view3dm_check (a plain openNURBS reader, tests/view3dm_check.cpp) computes from the FRUSTUM stored in the file, which does not
 #       use the lens at all, and
-#   (b) the closed form 2 atan(12 / lens): 28 mm gives 46.397 degrees, 35 mm gives 37.980 degrees.
+#   (b) the closed form 2 atan(12 / lens): 28 mm gives 46.397 degrees, 35 mm gives 37.849 degrees.
 # Two directions: an openNURBS-authored named view with a 28 mm lens (view3dm_check fixture) restored in the app must report the angle of that frustum; a view
 # the app saves with ZoomLens 35 must have a frustum of the angle the app reports. Before the app followed openNURBS the app reported 54.4 degrees for 35 mm
-# (18 mm film half-size) against 38.0 in the file. The angle printed by the Camera command is the short-side angle.
+# (18 mm film half-size) against 37.8 in the file. The angle printed by the Camera command is the short-side angle.
 # Only the landscape (width > height) viewport is exercised; the portrait branch (short side = width) is derived the same way and not run here.
 # ---------------------------------------------------------------------------
 if [ "${IS_WINDOWS:-0}" = 1 ]; then
