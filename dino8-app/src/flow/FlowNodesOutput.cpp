@@ -14,6 +14,7 @@ void RegisterRowNodes2();
 void RegisterBlenderNodes();
 void RegisterBlenderNodes2();
 void RegisterBlenderNodes3();
+void RegisterIntersectNodes();
 
 namespace {
 
@@ -72,6 +73,7 @@ void RegisterBuiltinNodes() {
   RegisterBlenderNodes();
   RegisterBlenderNodes2();
   RegisterBlenderNodes3();
+  RegisterIntersectNodes();
   AddDisplay();
   AddOutput();
 }

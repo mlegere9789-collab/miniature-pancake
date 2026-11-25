@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-CURVE-0039 (Line SDL): player + bake, read back by sections/97_glsdl.sh (see flowgeo_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 13
+SelAll
+List

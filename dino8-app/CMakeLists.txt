@@ -375,6 +375,7 @@ set(DINO8_SOURCES
   src/flow/FlowNodesBlender.cpp
   src/flow/FlowNodesBlender2.cpp
   src/flow/FlowNodesBlender3.cpp
+  src/flow/FlowNodesIntersect.cpp
   src/flow/FlowNodesOutput.cpp
   src/flow/FlowEditor.cpp
   src/flow/FlowPreview.cpp
