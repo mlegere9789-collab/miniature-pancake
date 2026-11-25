@@ -118,7 +118,8 @@ def scn30(log, dump):
     d = tuple(t - e for t, e in zip(v["target"], v["eye"]))
     nd = math.sqrt(sum(x * x for x in d))
     dd = tuple(x / nd for x in d)
-    report(all(abs(p - q) < 1e-4 for p, q in zip(dd, v["dir"])), "SCN30_7: its direction vector is the unit vector from location to target (%s)" % (v["dir"],))
+    nv = math.sqrt(sum(x * x for x in v["dir"]))
+    report(nv > 0 and all(abs(p - q / nv) < 1e-4 for p, q in zip(dd, v["dir"])), "SCN30_7: its direction vector (%s) points from location to target: the same direction as target - location (unit %s)" % (v["dir"], tuple(round(x, 5) for x in dd)))
     report(abs(v["angle"] - 50.0) > 1.0, "SCN30_7d: decoy, the field of view is not the default one")
 
 
