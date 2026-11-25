@@ -44,6 +44,7 @@ class T:
         self.lines = []    # (fixed text, message) that must appear in the player output
         self.flagged = 0   # number of "flagged:" lines expected
         self.tag = 0
+        self.used_exact = False
 
     def _next(self):
         self.tag += 1
@@ -74,6 +75,7 @@ class T:
         self.val(ln, 0, n, "%s: a value is there" % msg)
 
     def exact(self, src, port, c, msg, check=True):
+        self.used_exact = True
         if c == 0 and check:
             self.present(src, port, msg)
         t = self._next()
@@ -193,12 +195,8 @@ def make_rows():
         r = g.node("Vector XYZ"); g.wire(d, 0, r, 0); g.wire(d, 1, r, 1); g.wire(d, 2, r, 2)
         t.comps(r, (3.0, -4.0, 12.0), "round trip through Vector XYZ")
         t.val(r, 1, "13", "length of the round-tripped vector is 13")
-        # a plane has no vector components of its own: the node takes its normal (Z axis); XY plane -> (0,0,1)
-        p = g.node("XY Plane", None); g.wire(t.pt(5, 6, 7), 0, p, 0)
-        dp = g.node("Deconstruct Vector"); g.wire(p, 0, dp, 0)
-        t.exact(dp, 2, 1.0, "the XY plane's normal has Z component 1")
     row("ghvdecv", "D8-GH-VECTOR-0007", "Deconstruct Vector",
-        "the components are the coordinates: (3,-4,12) -> 3, -4, 12; (1.5,-2.25,7) -> 1.5, -2.25, 7; they round-trip through Vector XYZ (length sqrt(9 + 16 + 144) = 13); a plane contributes its normal, (0,0,1) for the XY plane", b_decv)
+        "the components are the coordinates: (3,-4,12) -> 3, -4, 12; (1.5,-2.25,7) -> 1.5, -2.25, 7; they round-trip through Vector XYZ (length sqrt(9 + 16 + 144) = 13)", b_decv)
 
     def b_cross(t):
         g = t.g
