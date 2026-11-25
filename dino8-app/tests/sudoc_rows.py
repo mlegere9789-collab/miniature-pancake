@@ -67,6 +67,37 @@ def poly_pts(r):
     return list(zip(xs, ys))
 
 
+def spline_by_spans(rec, per_span):
+    """Samples a DXF SPLINE (degree group 71, knots 40, control points 10/20, weights 41) with de Boor's algorithm, `per_span` points in EVERY knot span
+    (so the short curved spans are sampled as finely as the long straight ones): [(x, y), ...] from the start to the end of the curve."""
+    deg = int(g(rec, 71))
+    knots = [float(v) for c, v in rec[1] if c == 40]
+    xs = [float(v) for c, v in rec[1] if c == 10]
+    ys = [float(v) for c, v in rec[1] if c == 20]
+    ws = [float(v) for c, v in rec[1] if c == 41] or [1.0] * len(xs)
+    cp = [(x * w, y * w, w) for x, y, w in zip(xs, ys, ws)]
+    t0, t1 = knots[deg], knots[len(cp)]
+    cuts = sorted({k for k in knots if t0 <= k <= t1})
+
+    def at(t):
+        k = deg
+        while k < len(cp) - 1 and knots[k + 1] <= t:
+            k += 1
+        d = [list(cp[j + k - deg]) for j in range(deg + 1)]
+        for r in range(1, deg + 1):
+            for j in range(deg, r - 1, -1):
+                den = knots[j + 1 + k - r] - knots[j + k - deg]
+                a = (t - knots[j + k - deg]) / den if den else 0.0
+                d[j] = [(1 - a) * d[j - 1][m] + a * d[j][m] for m in range(3)]
+        return (d[deg][0] / d[deg][2], d[deg][1] / d[deg][2])
+    out = []
+    for a, b in zip(cuts, cuts[1:]):
+        for i in range(per_span):
+            out.append(at(a + (b - a) * i / per_span))
+    out.append(at(t1))
+    return out
+
+
 def block_polys(path, name):
     return [poly_pts(r) for r in R.block_entities(path, name, 'LWPOLYLINE')]
 
@@ -505,10 +536,9 @@ Export @T@/rr.dxf
         if len(sp) != 1:
             return
         r = 8.0
-        pts = spline_points(sp[0], 40000)
+        pts = spline_by_spans(sp[0], 20000)
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         check(close(min(xs), 0, 1e-7) and close(max(xs), 100, 1e-7) and close(min(ys), 0, 1e-7) and close(max(ys), 60, 1e-7), 'RRECT_2: the bounding box is exactly (0,0)-(100,60) (found x %.9f..%.9f, y %.9f..%.9f)' % (min(xs), max(xs), min(ys), max(ys)))
-        centres = [(8, 8), (92, 8), (92, 52), (8, 52)]
         worst, on_arc = 0.0, 0
         for x, y in pts:
             cx = 8 if x < 8 else (92 if x > 92 else None)
@@ -518,10 +548,11 @@ Export @T@/rr.dxf
                 on_arc += 1
             else:
                 worst = max(worst, min(abs(x), abs(x - 100), abs(y), abs(y - 60)))
-        check(worst < 5e-8 and on_arc > 1000, 'RRECT_3: every sample is on a side or on a radius-8 quarter circle about a corner centre (worst residual %.3g, bound 5e-8 from the 9 decimals of the file; %d samples on arcs)' % (worst, on_arc))
+        check(worst < 5e-8 and on_arc > 50000, 'RRECT_3: every sample is on a side or on a radius-8 quarter circle about a corner centre (worst residual %.3g, bound 5e-8 from the 9 decimals of the file; %d of %d samples on arcs)' % (worst, on_arc, len(pts)))
         area, per = R.polygon_area_perimeter(pts)
         want_a, want_p = 6000 - (4 - math.pi) * r * r, 320 - 8 * r + 2 * math.pi * r
-        check(abs(area - want_a) < 1e-4 and abs(per - want_p) < 1e-4, 'RRECT_4: area 6000 - (4 - pi) 64 = %.6f and perimeter 320 - 64 + 16 pi = %.6f (found %.6f and %.6f)' % (want_a, want_p, area, per))
+        # the sampled polygon is inscribed: its area is short by about 4 x 20000 x (2/3) s^3 / (8 r) with s = (pi r / 2) / 20000 = 6.3e-4, i.e. 2e-7
+        check(abs(area - want_a) < 1e-5 and abs(per - want_p) < 1e-5, 'RRECT_4: area 6000 - (4 - pi) 64 = %.6f and perimeter 320 - 64 + 16 pi = %.6f (found %.6f and %.6f; bound 1e-5, the inscribed polygon of 20000 samples per span is short by about 2e-7)' % (want_a, want_p, area, per))
         check(abs(area - 6000) > 1.0 and abs(per - 320) > 1.0, 'RRECT_4d: decoy, the rounded shape is not the sharp 100 x 60 rectangle (area 6000, perimeter 320)')
     return s, chk
 
@@ -624,7 +655,37 @@ Export @T@/ex.dxf
             dev = max(dev, abs(b[1] - 0.4 * (b[0] - 20)) / math.hypot(0.4, 1))
         check(dev < 1e-12, 'EXT_5: the four expected end points lie on the boundary line (distance %.3g)' % dev)
         check(has_line(f, 20, 0, 80, 24) and len(entities(f, 'LINE')) == 5, 'EXT_6: the boundary is unchanged and there are 5 lines (found %d)' % len(entities(f, 'LINE')))
-        check(not has_line(f, 0, 5, 10, 5) and not has_line(f, 0, 30, 10, 20), 'EXT_6d: decoy, the original short lines (to x = 10) are not left behind')
+        check(not has_line(f, 0, 5, 10, 5) and not has_line(f, 0, 30, 10, 20) and not has_line(f, 0, 8, 10, 8) and not has_line(f, 0, 45, 10, 35), 'EXT_6d: decoy, none of the original short lines (to x = 10) is left behind')
+        if R.failed:
+            print('note EXT: lines in the file: %s' % sorted((round(gf(r, 10), 6), round(gf(r, 20), 6), round(gf(r, 11), 6), round(gf(r, 21), 6)) for r in entities(f, 'LINE')))
+            print('note EXT: app lines: %s' % [x for x in log_lines(log) if 'Extend' in x][:12])
+    return s, chk
+
+
+# The same four lines extended with one Extend command per line (one pick each).
+@case('ext1')
+def ext1():
+    s = PRE + """Line 0,5,0 10,5,0
+Line 0,8,0 10,8,0
+Line 0,30,0 10,20,0
+Line 0,45,0 10,35,0
+Line 20,0,0 80,24,0
+"""
+    for pick in ('9,5,0', '9,8,0', '9,21,0', '9,36,0'):
+        s += "SelNone\nExtend Boundary SelLast Enter %s Enter\n" % pick
+    s += "SelAll\nExport @T@/ex1.dxf\n"
+
+    def chk(d, log):
+        f = d + '/ex1.dxf'
+        t3, t4 = (30 + 8) / 1.4, (45 + 8) / 1.4
+        want = [((0, 5), (20 + 5 / 0.4, 5)), ((0, 8), (20 + 8 / 0.4, 8)), ((0, 30), (t3, 30 - t3)), ((0, 45), (t4, 45 - t4))]
+        for i, (a, b) in enumerate(want, 1):
+            check(has_line(f, a[0], a[1], b[0], b[1]), 'EXT1_%d: the line from (%g,%g) is extended to (%.9f, %.9f) on the boundary y = 0.4 (x - 20)' % (i, a[0], a[1], b[0], b[1]))
+        check(has_line(f, 20, 0, 80, 24) and len(entities(f, 'LINE')) == 5, 'EXT1_5: the boundary is unchanged and there are 5 lines (found %d)' % len(entities(f, 'LINE')))
+        check(not has_line(f, 0, 45, 10, 35) and not has_line(f, 0, 30, 10, 20), 'EXT1_5d: decoy, the original sloping lines (to x = 10) are not left behind')
+        if R.failed:
+            print('note EXT1: lines in the file: %s' % sorted((round(gf(r, 10), 6), round(gf(r, 20), 6), round(gf(r, 11), 6), round(gf(r, 21), 6)) for r in entities(f, 'LINE')))
+            print('note EXT1: app lines: %s' % [x for x in log_lines(log) if 'Extend' in x][:12])
     return s, chk
 
 

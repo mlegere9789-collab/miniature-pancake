@@ -194,6 +194,17 @@ def main():
     log_r = "history: Block 'A': 1 object(s), base (0, 0, 0), 0 object(s) in instances\nhistory: Block 'B': 1 object(s), base (200, 50, 0), 21 object(s) in instances\nhistory: ReplaceBlock: 20 instance(s) now 'B'\n"
     good_bad('repl', repl_files(), [('only 19 replaced instances', repl_files(n=19)), ('an instance of A left behind', repl_files(a_used=True))], log_r)
 
+    # ---- rrect: the exact rational quadratic closed spline of a 100 x 60 rectangle with corner radius r (8 spans: 4 sides and 4 quarter circles)
+    def rrect_file(r=8.0, w=math.sqrt(0.5)):
+        cps = [(r, 0), (50, 0), (100 - r, 0), (100, 0), (100, r), (100, 30), (100, 60 - r), (100, 60), (100 - r, 60), (50, 60), (r, 60), (0, 60), (0, 60 - r), (0, 30), (0, r), (0, 0), (r, 0)]
+        ws = [1, 1, 1, w, 1, 1, 1, w, 1, 1, 1, w, 1, 1, 1, w, 1]
+        knots = [0, 0, 0] + [k for k in range(1, 8) for _ in (0, 1)] + [8, 8, 8]
+        kv = [(8, '0'), (70, 11), (71, 2), (72, len(knots)), (73, len(cps)), (74, 0)] + [(40, '%.9f' % k) for k in knots] + [(41, '%.9f' % x) for x in ws]
+        for x, y in cps:
+            kv += [(10, '%.9f' % x), (20, '%.9f' % y), (30, '0.0')]
+        return dxf([ent('SPLINE', *kv)])
+    good_bad('rrect', {'rr.dxf': rrect_file()}, [('a corner radius of 7.5 instead of 8 in the control points of one build', {'rr.dxf': rrect_file(r=7.5)}), ('arcs that are not circular (weight 0.8)', {'rr.dxf': rrect_file(w=0.8)})])
+
     print('selftest: %d failure(s)' % bad)
     return 1 if bad else 0
 
