@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-TREES-0002 (Longest-list matching): player + bake, read back by sections/104_ghtlongest.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 24
+SelAll
+List

@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0008 (Rotate): player + bake, read back by sections/104_ghxrot.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 34
+SelAll
+List

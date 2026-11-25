@@ -140,6 +140,10 @@ struct Port {
   Kind kind = Kind::Any;
   Value user_value;  // typed/edited default (input ports)
   bool has_user_value = false;
+  // Parameter modifiers (input ports): applied to the gathered tree before the component sees it, in this order:
+  // Reverse (each branch's list back to front), then Flatten (one branch {0}) or Graft (every item its own branch,
+  // the item index appended to the path), then Simplify (the leading path indices every branch shares removed).
+  bool reverse = false, flatten = false, graft = false, simplify = false;
   Tree data;         // solved data (outputs; inputs cache the gathered tree)
 };
 

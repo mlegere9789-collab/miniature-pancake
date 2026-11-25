@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-TREES-0009 (Flatten parameter modifier): player + bake, read back by sections/104_ghtflat.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 20
+SelAll
+List

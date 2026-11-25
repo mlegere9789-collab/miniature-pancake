@@ -148,6 +148,10 @@ void RegisterFlowCommands(CommandEngine& e) {
         ctx.Print("GrasshopperPlayer: solved " + std::to_string(g.Nodes().size()) + " node(s) in " + FormatNumber(g.last_stats.total_ms) + " ms" +
                   (bake ? ", baked " + std::to_string(ctx.Doc().ObjectCount()) + " document object(s) total" : ""));
         for (auto& n : g.Nodes()) {
+          if (!n->error.empty()) ctx.Print("GrasshopperPlayer: " + n->type + " (#" + std::to_string(n->id) + ") flagged: " + n->error);
+          else if (!n->warning.empty()) ctx.Print("GrasshopperPlayer: " + n->type + " (#" + std::to_string(n->id) + ") warns: " + n->warning);
+        }
+        for (auto& n : g.Nodes()) {
           if (!n->def || n->def->special != flow::NodeDef::Special::Solver) continue;
           ctx.Print("GrasshopperPlayer: " + n->type + " (#" + std::to_string(n->id) + ") best fitness " +
                     FormatNumber(n->solver_best_fitness) + " after " + std::to_string(n->solver_generations_run) + " generation(s)" +

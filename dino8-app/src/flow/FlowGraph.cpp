@@ -196,7 +196,15 @@ void Graph::GatherInput(Node& n, int port, Tree& out) {
   } else if (!n.inputs[static_cast<size_t>(port)].user_value.IsNull()) {
     out = Tree::Single(n.inputs[static_cast<size_t>(port)].user_value);
   }
+  const Port& ip = n.inputs[static_cast<size_t>(port)];
+  if (ip.reverse) for (Branch& b : out.branches) std::reverse(b.items.begin(), b.items.end());
+  if (ip.flatten) out = out.Flattened();
+  else if (ip.graft) out = out.Grafted();
+  if (ip.simplify) out = out.Simplified();
 }
+
+// Longest-list data matching: when an input has fewer items than the longest list, its LAST item is repeated.
+static const Value& MatchedItem(const std::vector<Value>& src, size_t item) { return src[std::min(item, src.size() - 1)]; }
 
 void RunMatched(Graph& g, Node& n, app::Document* doc, const std::vector<Tree>& inputs) {
   if (!n.def || !n.def->eval) return;
@@ -240,9 +248,9 @@ void RunMatched(Graph& g, Node& n, app::Document* doc, const std::vector<Tree>& 
         if (acc == Access::List) {
           ectx.lists[i] = src;
         } else if (!src.empty()) {
-          ectx.items[i] = src[item % src.size()];
+          ectx.items[i] = MatchedItem(src, item);
         } else if (!flat.empty()) {
-          ectx.items[i] = flat[item % flat.size()];
+          ectx.items[i] = MatchedItem(flat, item);
         }
       }
       n.def->eval(ectx);
@@ -518,9 +526,9 @@ void Graph::Evaluate(Node& n, app::Document* doc) {
         if (acc == Access::List) {
           ectx.lists[i] = src;
         } else if (!src.empty()) {
-          ectx.items[i] = src[item % src.size()];
+          ectx.items[i] = MatchedItem(src, item);
         } else if (!flat.empty()) {
-          ectx.items[i] = flat[item % flat.size()];
+          ectx.items[i] = MatchedItem(flat, item);
         }
       }
       n.def->eval(ectx);
@@ -635,6 +643,10 @@ std::string Graph::ToJson(const std::vector<NodeId>* only) const {
       if (i) os << ",";
       os << "{\"has\":" << (n->inputs[i].has_user_value ? "true" : "false") << ",\"value\":";
       WriteValue(os, n->inputs[i].user_value);
+      if (n->inputs[i].reverse) os << ",\"reverse\":true";
+      if (n->inputs[i].flatten) os << ",\"flatten\":true";
+      if (n->inputs[i].graft) os << ",\"graft\":true";
+      if (n->inputs[i].simplify) os << ",\"simplify\":true";
       os << "}";
     }
     os << "]}";
@@ -684,6 +696,10 @@ bool Graph::FromJson(const std::string& text, std::string& error, bool merge, fl
     const json::Value& jins = jn["inputs"];
     for (size_t p = 0; p < jins.Size() && p < n->inputs.size(); ++p) {
       const json::Value& jp = jins[p];
+      n->inputs[p].reverse = jp["reverse"].type == json::Value::Type::Bool && jp["reverse"].boolean;
+      n->inputs[p].flatten = jp["flatten"].type == json::Value::Type::Bool && jp["flatten"].boolean;
+      n->inputs[p].graft = jp["graft"].type == json::Value::Type::Bool && jp["graft"].boolean;
+      n->inputs[p].simplify = jp["simplify"].type == json::Value::Type::Bool && jp["simplify"].boolean;
       if (jp["has"].type == json::Value::Type::Bool && jp["has"].boolean) {
         n->inputs[p].has_user_value = true;
         n->inputs[p].user_value = ReadValue(jp["value"]);

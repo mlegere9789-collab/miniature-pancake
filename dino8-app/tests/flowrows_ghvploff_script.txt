@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0054 (Plane Offset): player + bake, read back by sections/104_ghvploff.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 27
+SelAll
+List

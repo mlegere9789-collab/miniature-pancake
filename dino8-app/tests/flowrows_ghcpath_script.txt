@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-SETS-0062 (Construct Path): player + bake, read back by sections/104_ghcpath.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 13
+SelAll
+List
