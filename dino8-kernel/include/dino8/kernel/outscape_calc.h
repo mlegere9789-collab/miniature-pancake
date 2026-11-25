@@ -249,9 +249,18 @@ inline std::vector<double> GaussianKernel1D(double sigma, int radius) {
   for (double& v : k) v /= sum;
   return k;
 }
+// Index of sample i of an n-sample line after mirroring at both ends (the edge sample is repeated, period 2n):
+// ... 1 0 | 0 1 2 .. n-1 | n-1 n-2 ...  Works for any i, also when the kernel is wider than the line.
+inline int ReflectIndex(int i, int n) {
+  const int period = 2 * n;
+  int m = i % period;
+  if (m < 0) m += period;
+  return m < n ? m : period - 1 - m;
+}
 // Bloom on a luminance plane (row-major, w x h): bright = max(L - threshold, 0), blurred by a separable Gaussian with
-// zero padding, added back scaled by `intensity`. Energy added = intensity * sum(bright) when nothing reaches the
-// border.
+// mirrored edges, added back scaled by `intensity`. A symmetric kernel with this edge rule is a doubly stochastic
+// operator (each output row and each input column sums to 1), so the energy added is exactly
+// intensity * sum(bright), wherever the bright pixels lie, also in the corners and for a kernel wider than the plane.
 inline void BloomAdd(std::vector<double>& plane, int w, int h, double threshold, double sigma, int radius, double intensity) {
   std::vector<double> bright(plane.size()), tmp(plane.size(), 0.0), blur(plane.size(), 0.0);
   for (size_t i = 0; i < plane.size(); ++i) bright[i] = std::max(plane[i] - threshold, 0.0);
@@ -259,19 +268,13 @@ inline void BloomAdd(std::vector<double>& plane, int w, int h, double threshold,
   for (int y = 0; y < h; ++y)
     for (int x = 0; x < w; ++x) {
       double s = 0;
-      for (int t = -radius; t <= radius; ++t) {
-        const int xx = x + t;
-        if (xx >= 0 && xx < w) s += k[t + radius] * bright[static_cast<size_t>(y) * w + xx];
-      }
+      for (int t = -radius; t <= radius; ++t) s += k[t + radius] * bright[static_cast<size_t>(y) * w + ReflectIndex(x + t, w)];
       tmp[static_cast<size_t>(y) * w + x] = s;
     }
   for (int y = 0; y < h; ++y)
     for (int x = 0; x < w; ++x) {
       double s = 0;
-      for (int t = -radius; t <= radius; ++t) {
-        const int yy = y + t;
-        if (yy >= 0 && yy < h) s += k[t + radius] * tmp[static_cast<size_t>(yy) * w + x];
-      }
+      for (int t = -radius; t <= radius; ++t) s += k[t + radius] * tmp[static_cast<size_t>(ReflectIndex(y + t, h)) * w + x];
       blur[static_cast<size_t>(y) * w + x] = s;
     }
   for (size_t i = 0; i < plane.size(); ++i) plane[i] += intensity * blur[i];
@@ -288,7 +291,15 @@ inline double CandelaFromIsotropicLumens(double lumens) { return lumens / (4.0 *
 inline double LambertianEmitterLumens(double luminance, double areaSquareMetres) { return kPi * luminance * areaSquareMetres; }
 
 // IES LM-63 (IESNA, 1991/1995/2002) photometric data: parsed from text, interpolated and integrated.
+// Horizontal angle ranges the file may declare (the symmetry of the luminaire):
+//   type C (photometricType 1): one angle: rotationally symmetric; 0..90: the same in every quadrant (I(-h) = I(h) and
+//   I(180 - h) = I(h)); 0..180: symmetric about the 0-180 plane (I(360 - h) = I(h)); 90..270: symmetric about the 90-270
+//   plane (I(180 - h) = I(h)); 0..360: no symmetry.
+//   types A and B (2 and 3): one angle: the same at every horizontal angle; 0..90: symmetric about the vertical plane
+//   (I(-h) = I(h)); -90..90: no symmetry. Beyond +-90 degrees the table gives no emission. The vertical angles of an A or B
+//   table must run -90..90. Both are recalled from the public format, needs owner check; any other range is refused.
 struct IesProfile {
+  enum class HorizontalLayout { Unsupported, Rotational, Quadrant, Bilateral0To180, Bilateral90To270, Full360, FrontMirrored, FrontSigned };
   bool ok = false;
   std::string error;
   int lampCount = 0;
@@ -301,23 +312,53 @@ struct IesProfile {
   std::vector<double> vAngles, hAngles;
   std::vector<double> candela;  // [h][v], already multiplied by the candela multiplier
 
-  // Candela at vertical angle v and horizontal angle h (degrees), bilinear in the table; the horizontal angle is folded
-  // by the symmetry the table declares (one plane: rotationally symmetric; 0..90: quadrant; 0..180: bilateral).
+  // The layout the horizontal angle list declares for the photometric type (Unsupported for any other range).
+  HorizontalLayout Layout() const {
+    if (hAngles.empty() || vAngles.empty()) return HorizontalLayout::Unsupported;
+    const double f = hAngles.front(), l = hAngles.back(), eps = 1e-9;
+    auto is = [&](double a, double b) { return std::fabs(f - a) <= eps && std::fabs(l - b) <= eps; };
+    if (hAngles.size() == 1) return HorizontalLayout::Rotational;
+    if (photometricType == 1) {
+      if (is(0, 90)) return HorizontalLayout::Quadrant;
+      if (is(0, 180)) return HorizontalLayout::Bilateral0To180;
+      if (is(90, 270)) return HorizontalLayout::Bilateral90To270;
+      if (is(0, 360)) return HorizontalLayout::Full360;
+      return HorizontalLayout::Unsupported;
+    }
+    if (std::fabs(vAngles.front() + 90.0) > eps || std::fabs(vAngles.back() - 90.0) > eps) return HorizontalLayout::Unsupported;
+    if (is(0, 90)) return HorizontalLayout::FrontMirrored;
+    if (is(-90, 90)) return HorizontalLayout::FrontSigned;
+    return HorizontalLayout::Unsupported;
+  }
+
+  // Candela at vertical angle v and horizontal angle h (degrees), bilinear in the table; the horizontal angle is
+  // folded by the symmetry the table declares (see Layout), so the answer is defined for every h. Outside the vertical
+  // range of the table, and behind a type A/B table, the luminaire emits nothing (0).
   double CandelaAt(double vDeg, double hDeg) const {
     if (!ok || vAngles.empty() || hAngles.empty()) return 0.0;
     if (vDeg < vAngles.front() - 1e-9 || vDeg > vAngles.back() + 1e-9) return 0.0;
-    double h = std::fmod(hDeg, 360.0);
-    if (h < 0) h += 360.0;
-    const double hLast = hAngles.back();
-    size_t nh = hAngles.size();
-    if (nh == 1) {
-      h = hAngles[0];
-    } else if (hLast <= 90.0 + 1e-9) {
-      if (h > 180.0) h = 360.0 - h;
-      if (h > 90.0) h = 180.0 - h;
-    } else if (hLast <= 180.0 + 1e-9) {
-      if (h > 180.0) h = 360.0 - h;
+    const HorizontalLayout layout = Layout();
+    double h = hAngles.front();
+    if (layout == HorizontalLayout::FrontMirrored || layout == HorizontalLayout::FrontSigned) {
+      h = std::fmod(hDeg + 180.0, 360.0);
+      if (h < 0) h += 360.0;
+      h -= 180.0;  // [-180, 180)
+      if (layout == HorizontalLayout::FrontMirrored) h = std::fabs(h);
+      if (h > 90.0 + 1e-9 || h < -90.0 - 1e-9) return 0.0;
+    } else if (layout != HorizontalLayout::Rotational) {
+      h = std::fmod(hDeg, 360.0);
+      if (h < 0) h += 360.0;  // [0, 360)
+      if (layout == HorizontalLayout::Quadrant) {
+        if (h > 180.0) h = 360.0 - h;
+        if (h > 90.0) h = 180.0 - h;
+      } else if (layout == HorizontalLayout::Bilateral0To180) {
+        if (h > 180.0) h = 360.0 - h;
+      } else if (layout == HorizontalLayout::Bilateral90To270) {
+        if (h < 90.0) h = 180.0 - h;
+        else if (h > 270.0) h = 540.0 - h;
+      }
     }
+    const size_t nh = hAngles.size();
     h = std::min(std::max(h, hAngles.front()), hAngles.back());
     size_t h1 = 0;
     while (h1 + 1 < nh - 1 && hAngles[h1 + 1] < h) ++h1;
@@ -333,15 +374,31 @@ struct IesProfile {
     const double b = at(h2, v1) * (1 - tv) + at(h2, v2) * tv;
     return a * (1 - th) + b * th;
   }
-  // Total luminous flux (lm) = integral of I sin(v) dv dh over the sphere, by the midpoint rule on the interpolated
-  // table (0.25 degree in v, 1 degree in h).
+  // Total luminous flux (lm) = integral of I dOmega over the sphere, by the midpoint rule on the interpolated table
+  // (0.25 degree in v, 1 degree in h). Type C: dOmega = sin(v) dv dh with v the polar angle (0..180) and h 0..360.
+  // Types A and B: v is a latitude and h a longitude on the photometric web, dOmega = cos(v) dv dh with h -90..90
+  // (recalled convention, needs owner check; not tested against a closed form).
   double TotalLumens() const {
     if (!ok) return 0.0;
     const double dv = 0.25, dh = 1.0;
     double s = 0.0;
-    for (double v = dv / 2; v < 180.0; v += dv)
-      for (double h = dh / 2; h < 360.0; h += dh) s += CandelaAt(v, h) * std::sin(v * kDegToRad);
+    if (photometricType == 1) {
+      for (double v = dv / 2; v < 180.0; v += dv)
+        for (double h = dh / 2; h < 360.0; h += dh) s += CandelaAt(v, h) * std::sin(v * kDegToRad);
+    } else {
+      for (double v = -90.0 + dv / 2; v < 90.0; v += dv)
+        for (double h = -90.0 + dh / 2; h < 90.0; h += dh) s += CandelaAt(v, h) * std::cos(v * kDegToRad);
+    }
     return s * dv * dh * kDegToRad * kDegToRad;
+  }
+  // Lumen override: scales every candela value so that the integrated flux becomes `targetLumens`. Refused (false, nothing
+  // changed) for a profile that is not ok, has no flux to scale, or a negative or non-finite target.
+  bool ScaleToLumens(double targetLumens) {
+    const double flux = TotalLumens();
+    if (!ok || !(flux > 0.0) || !(targetLumens >= 0.0) || !std::isfinite(targetLumens)) return false;
+    const double ratio = targetLumens / flux;
+    for (double& c : candela) c *= ratio;
+    return true;
   }
 };
 
@@ -435,6 +492,10 @@ inline IesProfile ParseIesLm63(const std::string& text) {
       p.error = "horizontal angles not ascending";
       return p;
     }
+  if (p.Layout() == IesProfile::HorizontalLayout::Unsupported) {
+    p.error = "unsupported horizontal angle range for this photometric type";
+    return p;
+  }
   p.candela.resize(static_cast<size_t>(nv) * nh);
   for (size_t k = 0; k < p.candela.size(); ++k) p.candela[k] = nums[i + k] * p.candelaMultiplier;
   p.ok = true;

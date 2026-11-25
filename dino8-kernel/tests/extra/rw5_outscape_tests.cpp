@@ -6,6 +6,7 @@
 // form). The vendor behaviour that motivates each row is recalled, not observed: the rows say so; these tests check the maths clause only.
 // Each test also carries a decoy: a plausible wrong formula that must NOT pass the same check, so the test can fail.
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -113,7 +114,11 @@ D8_EXTRA_TEST(Rw5OutscapeToneReinhardWhitePoint) {
 // D8-ENSCAPE-EXPOSURE (filmic tone curve): Hable's operator with the published constants. Hand values (exact rational arithmetic): partial(1) =
 // 0.204/0.71 - 1/15 = 0.2206572770; partial(11.2) = 19.38/24.476 - 1/15 = 0.7251293784; so the output at input 0.5 (bias 2 -> 1) is
 // 0.2206572770 / 0.7251293784 = 0.3043005615; at input 1 (partial(2)) it is 0.4929185460; the input 5.6 (bias 2 -> 11.2) maps to exactly 1; 0 maps
-// to 0 and the curve rises monotonically. Decoy: skipping the division by the white-point value leaves partial(2) = 0.3574.
+// to 0 and the curve rises monotonically. Highlight roll-off: the slope of the output falls steadily toward the white point. Exact slopes (the quotient
+// rule on the rational, evaluated in exact fractions, f'(x) = 2 P'(2x) / P(11.2)): 0.4667097014 at 0.5, 0.3048794960 at 1, 0.1592070591 at 2, 0.0975670478
+// at 3 and 0.0398537246 at the white input 5.6, which is 0.085 of the slope at 0.5; the test compares a central difference of the code with these numbers.
+// The linear-space curve has no toe (its slope is largest at 0); the row claims none. Decoys: skipping the division by the white-point value leaves
+// partial(2) = 0.3574; a straight clipped ramp x/5.6 has the same slope everywhere, so it does not roll off.
 D8_EXTRA_TEST(Rw5OutscapeToneFilmicHable) {
   d8test::Check(Near(ToneHablePartial(1.0), 0.22065727699530516, 1e-12) && Near(ToneHablePartial(11.2), 0.7251293784387427, 1e-12),
                 "filmic: partial curve at 1 and at the white point 11.2 matches the hand-worked rationals");
@@ -129,6 +134,21 @@ D8_EXTRA_TEST(Rw5OutscapeToneFilmicHable) {
     prev = y;
   }
   d8test::Check(rising, "filmic: strictly rising from 0 to the white point");
+  auto slope = [](double x) { const double h = 1e-5; return (ToneHable(x + h) - ToneHable(x - h)) / (2.0 * h); };
+  d8test::Check(Near(slope(0.5), 0.4667097014052651, 1e-7) && Near(slope(1.0), 0.30487949595690145, 1e-7) && Near(slope(2.0), 0.1592070590603958, 1e-7) &&
+                    Near(slope(3.0), 0.0975670478141343, 1e-7) && Near(slope(5.6 - 2e-5), 0.03985372459580501, 2e-4),
+                "filmic: the slope at 0.5, 1, 2, 3 and 5.6 matches the exact rational derivative");
+  bool slopeFalls = true;
+  double prevSlope = 1e9;
+  for (double x = 0.05; x <= 5.5; x += 0.05) {
+    const double sl = slope(x);
+    if (!(sl < prevSlope) || !(sl > 0.0)) slopeFalls = false;
+    prevSlope = sl;
+  }
+  d8test::Check(slopeFalls, "filmic: the slope is positive and falls at every step from 0.05 to 5.5 (highlight roll-off)");
+  d8test::Check(slope(5.5) / slope(0.5) < 0.1 && slope(5.5) / slope(0.5) > 0.0, "filmic: near the white point the slope is under a tenth of the mid-tone slope");
+  const double rampLow = std::min(0.5 / 5.6, 1.0), rampHigh = std::min(5.5 / 5.6, 1.0);
+  d8test::Check(!((rampHigh - rampLow) / 5.0 < 0.1 * (rampLow / 0.5)), "filmic decoy: a clipped straight ramp keeps its slope and does not roll off");
   d8test::Check(!Near(ToneHablePartial(2.0), ToneHable(1.0), 0.05), "filmic decoy: the partial curve without the white-point division is rejected");
 }
 
@@ -429,6 +449,73 @@ D8_EXTRA_TEST(Rw5OutscapeBloomConservesEnergy) {
   d8test::Check(Near(ks, 1.0, 1e-14) && raw > 5.0, "bloom: the kernel sums to 1 (the raw weights would sum to 5.01)");
 }
 
+// D8-ENSCAPE-LENS (bloom keeps its energy at the image border): the edge rule mirrors the plane, so a hot pixel in a corner, on an edge, or on a plane narrower
+// than the kernel still adds exactly intensity * excess. Closed form for the corner pixel: the mirrored kernel gives the corner source the weight k0 + k1 on each
+// axis (its mirror image sits one sample outside), so the corner gain is intensity * excess * (k0 + k1)^2 with k_i = exp(-i^2/8)/S, S the sum over |i| <= 8.
+// A second implementation written here pads the plane explicitly (a 17-sample margin, repeated reflection for planes narrower than the margin) and convolves with the
+// full two-dimensional kernel; every pixel agrees to 1e-12. Decoy: the zero-padded rule gives the corner only (0.5 + k0/2)^2 = 0.36 of its energy, far from exact.
+D8_EXTRA_TEST(Rw5OutscapeBloomConservesEnergyAtBorder) {
+  const double intensity = 0.5, threshold = 1.0, sigma = 2.0;
+  const int radius = 8;
+  std::vector<double> kern(2 * radius + 1);
+  double ksum = 0;
+  for (int i = -radius; i <= radius; ++i) ksum += std::exp(-0.5 * i * i / (sigma * sigma));
+  for (int i = -radius; i <= radius; ++i) kern[i + radius] = std::exp(-0.5 * i * i / (sigma * sigma)) / ksum;
+  auto reflect = [](int i, int len) {
+    while (i < 0 || i >= len) i = i < 0 ? -1 - i : 2 * len - 1 - i;
+    return i;
+  };
+  auto bloomTotals = [&](int w, int h, const std::vector<std::pair<int, int>>& hot, double value, std::vector<double>* out) {
+    std::vector<double> plane(static_cast<size_t>(w) * h, 0.2);
+    for (const auto& pr : hot) plane[static_cast<size_t>(pr.second) * w + pr.first] = value;
+    const std::vector<double> before = plane;
+    BloomAdd(plane, w, h, threshold, sigma, radius, intensity);
+    double added = 0;
+    for (size_t i = 0; i < plane.size(); ++i) added += plane[i] - before[i];
+    // second implementation: explicit padding and a full 2-D kernel
+    double maxDiff = 0;
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x) {
+        double g = 0;
+        for (int dy = -radius; dy <= radius; ++dy)
+          for (int dx = -radius; dx <= radius; ++dx) {
+            const double b = std::max(before[static_cast<size_t>(reflect(y + dy, h)) * w + reflect(x + dx, w)] - threshold, 0.0);
+            g += kern[dy + radius] * kern[dx + radius] * b;
+          }
+        maxDiff = std::max(maxDiff, std::fabs(plane[static_cast<size_t>(y) * w + x] - (before[static_cast<size_t>(y) * w + x] + intensity * g)));
+      }
+    if (out) *out = plane;
+    return std::make_pair(added, maxDiff);
+  };
+  std::vector<double> out;
+  auto corner = bloomTotals(41, 41, {{0, 0}}, 5.0, &out);
+  d8test::Check(Near(corner.first, intensity * 4.0, 1e-10) && corner.second < 1e-12, "bloom border: a corner hot pixel adds exactly intensity * excess = 2.0 and matches the explicit-padding implementation");
+  const double k0 = kern[radius], k1 = kern[radius + 1];
+  d8test::Check(Near(out[0] - 5.0, intensity * 4.0 * (k0 + k1) * (k0 + k1), 1e-12), "bloom border: the corner pixel's own gain is intensity * excess * (k0 + k1)^2");
+  bool allExact = true;
+  for (const auto& pr : std::vector<std::pair<int, int>>{{0, 20}, {40, 40}, {20, 0}, {3, 2}, {40, 0}, {1, 39}}) {
+    auto r = bloomTotals(41, 41, {pr}, 5.0, nullptr);
+    if (!(Near(r.first, 2.0, 1e-10) && r.second < 1e-12)) allExact = false;
+  }
+  d8test::Check(allExact, "bloom border: edge, near-edge and other corner pixels also add exactly 2.0");
+  auto narrow = bloomTotals(5, 7, {{4, 6}}, 5.0, nullptr);
+  auto narrow2 = bloomTotals(5, 7, {{0, 0}, {2, 3}}, 3.0, nullptr);
+  d8test::Check(Near(narrow.first, 2.0, 1e-10) && narrow.second < 1e-12 && Near(narrow2.first, 2.0 * 0.5 * 2.0, 1e-10) && narrow2.second < 1e-12,
+                "bloom border: a plane narrower than the kernel (5 x 7, radius 8) conserves energy for one and for two hot pixels");
+  auto three = bloomTotals(41, 41, {{0, 0}, {40, 0}, {10, 40}}, 3.0, nullptr);
+  d8test::Check(Near(three.first, 3.0 * 2.0 * intensity, 1e-10) && three.second < 1e-12, "bloom border: three hot pixels of excess 2 add 3 * 2 * 0.5 = 3.0");
+  std::vector<double> outFar;
+  bloomTotals(41, 41, {{40, 40}}, 5.0, &outFar);
+  bool mirrored = true;
+  for (int y = 0; y < 41; ++y)
+    for (int x = 0; x < 41; ++x)
+      if (!Near(out[static_cast<size_t>(y) * 41 + x], outFar[static_cast<size_t>(40 - y) * 41 + (40 - x)], 1e-15)) mirrored = false;
+  d8test::Check(mirrored, "bloom border: the result for the (0,0) pixel is the point mirror of the result for the (40,40) pixel");
+  double half = 0;
+  for (int i = 0; i <= radius; ++i) half += kern[i + radius];
+  d8test::Check(!Near(half * half, 1.0, 0.1), "bloom border decoy: zero padding keeps only (0.5 + k0/2)^2 = 0.36 of the corner energy and is rejected");
+}
+
 // D8-ENSCAPE-LIGHT (point light illuminance and photometric units): E = I cos(theta) / d^2. Hand values: 1000 cd at 2 m normal gives 250 lux; at 4 m 62.5 lux
 // (quartered); at 60 degrees incidence (cos 0.5) 125 lux; a back-facing surface gets 0. An isotropic 800 lm source is 800/(4 pi) = 63.66198 cd, so at 3 m it
 // gives 63.66198 / 9 = 7.07355 lux; I * 4 pi returns the flux (the illuminance summed over a sphere). A Lambertian emitter of 100 cd/m2 and 2 m2 radiates
@@ -502,8 +589,119 @@ D8_EXTRA_TEST(Rw5OutscapeIesLuminousFlux) {
   for (double v = 0.125; v < 180.0; v += 0.25)
     (v < 90.0 ? down : up) += l.CandelaAt(v, 10.0) * std::sin(v * pi / 180.0);
   d8test::Check(up == 0.0 && down > 0.0, "IES flux: a downward-only table has no emission above the horizon");
-  const double unweighted = 100.0 * pi * 2.0 * pi;  // the integral of I dv dh without the sin(v) solid-angle weight
+  const double unweighted = 100.0 * pi * 2.0 * pi;  // the integral of I dv dh without the sin(v) weight
   d8test::Check(!NearRel(unweighted, 4.0 * pi * 100.0, 0.1), "IES flux decoy: integrating without the sin(v) weight is rejected");
+  // the clause "from which a lumen override rescales the intensity": the override target is met through the integrated flux. 100 cd uniform scaled to 2000 lm
+  // is 2000 / (4 pi) = 159.1549 cd in every direction (closed form), and the profile then integrates to 2000 lm.
+  IesProfile scaled = u;
+  d8test::Check(scaled.ScaleToLumens(2000.0) && NearRel(scaled.CandelaAt(60.0, 0.0), 2000.0 / (4.0 * pi), 1e-4) && NearRel(scaled.TotalLumens(), 2000.0, 1e-12),
+                "IES flux: overriding to 2000 lm gives 2000 / (4 pi) = 159.155 cd and the profile integrates to 2000 lm");
+  d8test::Check(!NearRel(100.0 * 2000.0 / 1000.0, 2000.0 / (4.0 * pi), 0.1), "IES flux decoy: scaling by target over 1000 (a per-1000-lumen reading) does not give the integrated-flux result");
+}
+
+// More hand-authored LM-63 files, one per horizontal-angle layout of the public format.
+const char* kIesBilateral90 =  // type C, horizontal planes 90, 180, 270 (symmetric about the 90-270 plane), v = 0, 90; plane candela 100/110, 200/210, 300/310
+    "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 3 1 2 0 0 0\n1 1 100\n0 90\n90 180 270\n100 110\n200 210\n300 310\n";
+const char* kIesTriangle90 =  // the same layout with v = 0, 180 and candela 0, 100, 0 on planes 90, 180, 270 (a triangle wave in h of period 180, mean 50)
+    "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 3 1 2 0 0 0\n1 1 100\n0 180\n90 180 270\n0 0\n100 100\n0 0\n";
+const char* kIesFull360 =  // type C, planes 0, 90, 180, 270, 360 (no symmetry), v = 0, 90; candela 10/15, 20/25, 30/35, 40/45, 10/15
+    "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 5 1 2 0 0 0\n1 1 100\n0 90\n0 90 180 270 360\n10 15\n20 25\n30 35\n40 45\n10 15\n";
+const char* kIesFrontSigned =  // type B, v = -90, 0, 90 and h = -90, 0, 90; plane candela 10/11/12, 20/21/22, 30/31/32
+    "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 3 3 2 2 0 0 0\n1 1 100\n-90 0 90\n-90 0 90\n10 11 12\n20 21 22\n30 31 32\n";
+const char* kIesFrontMirrored =  // type A, v = -90, 0, 90 and h = 0, 90 (symmetric about the vertical plane); plane candela 20/21/22, 30/31/32
+    "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 3 2 3 2 0 0 0\n1 1 100\n-90 0 90\n0 90\n20 21 22\n30 31 32\n";
+
+// D8-ENSCAPE-LIGHT (IES horizontal-angle layouts, the symmetry of the file): the public LM-63 layouts for type C are one plane (rotational), 0..90 (every
+// quadrant alike), 0..180 (symmetric about the 0-180 plane), 90..270 (symmetric about the 90-270 plane: I(180 - h) = I(h)) and 0..360 (none); for types A and B
+// 0..90 (I(-h) = I(h)) and -90..90, with no emission beyond +-90 (recalled for A and B, needs owner check). Hand values for the 90..270 file (planes 90, 180,
+// 270 at v = 0 with 100, 200, 300): h = 0 gives I(180) = 200; 45 gives I(135) = 150; 300 gives I(240) = 266.667; 350 gives I(190) = 211.111; -30 gives I(210)
+// = 233.333; 360 gives 200; and (v = 45, h = 0) is 205 (the vertical interpolation between 200 and 210). A clamping reader would give 100 or 300 there. The
+// defining property I(h) = I(180 - h) = I(h + 360) holds over a sweep. Flux of the triangle-wave file: v-independent candela 100 cos-like triangle gives
+// 2 * 2 pi * 50 = 200 pi = 628.3185 lm, the clamped reading gives half of it. The 0..360 file: (315) lies between 270 (40) and 360 (10) = 25, -45 wraps
+// to the same, 450 is 90 (20), 360 is 10. The signed type B file: (h = -45) between 11 and 21 = 16, 45 gives 26, 120 and -100 give 0 (behind), 270 is -90
+// (11), (v = -45, h = 45) is 25.5, (v = 100) is 0, and the same table read as type A gives the same numbers. The mirrored type A file: -45 and 45 both give
+// 26, -90 gives 31, -135 gives 0. Ranges outside the format (0..270 or 0..45 for type C, 0..180 or -45..45 for type B, a type B vertical range 0..90) are refused.
+D8_EXTRA_TEST(Rw5OutscapeIesHorizontalLayouts) {
+  const double pi = 3.14159265358979323846;
+  const IesProfile b = ParseIesLm63(kIesBilateral90);
+  d8test::Check(b.ok && b.Layout() == IesProfile::HorizontalLayout::Bilateral90To270 && Near(b.CandelaAt(0.0, 90.0), 100.0, 1e-12) && Near(b.CandelaAt(0.0, 180.0), 200.0, 1e-12) && Near(b.CandelaAt(0.0, 270.0), 300.0, 1e-12),
+                "IES 90..270: the file parses as that layout and the tabulated planes read back");
+  d8test::Check(Near(b.CandelaAt(0.0, 0.0), 200.0, 1e-9) && Near(b.CandelaAt(0.0, 45.0), 150.0, 1e-9) && Near(b.CandelaAt(0.0, 300.0), 266.66666666666667, 1e-9) && Near(b.CandelaAt(0.0, 350.0), 211.11111111111111, 1e-9) &&
+                    Near(b.CandelaAt(0.0, -30.0), 233.33333333333334, 1e-9) && Near(b.CandelaAt(0.0, 360.0), 200.0, 1e-9) && Near(b.CandelaAt(45.0, 0.0), 205.0, 1e-9),
+                "IES 90..270: angles outside the table mirror about the 90-270 plane (200, 150, 266.667, 211.111, 233.333, 200, 205)");
+  bool mirror = true;
+  for (double h = -400.0; h <= 400.0; h += 7.0)
+    if (!Near(b.CandelaAt(0.0, h), b.CandelaAt(0.0, 180.0 - h), 1e-9) || !Near(b.CandelaAt(0.0, h), b.CandelaAt(0.0, h + 360.0), 1e-9)) mirror = false;
+  d8test::Check(mirror, "IES 90..270: I(h) = I(180 - h) = I(h + 360) over a sweep from -400 to 400 degrees");
+  const IesProfile tri = ParseIesLm63(kIesTriangle90);
+  d8test::Check(tri.ok && NearRel(tri.TotalLumens(), 200.0 * pi, 1e-4), "IES 90..270: the triangle-wave file emits 200 pi = 628.32 lm over the whole sphere");
+  const double clampedFlux = 100.0 * pi;  // what reading only the tabulated half (clamping outside 90..270) would integrate to: half of 200 pi
+  d8test::Check(!NearRel(clampedFlux, tri.TotalLumens(), 0.1), "IES 90..270 decoy: the clamped reading gives half the flux and is rejected");
+  const IesProfile f = ParseIesLm63(kIesFull360);
+  d8test::Check(f.ok && f.Layout() == IesProfile::HorizontalLayout::Full360 && Near(f.CandelaAt(0.0, 315.0), 25.0, 1e-9) && Near(f.CandelaAt(0.0, -45.0), 25.0, 1e-9) && Near(f.CandelaAt(0.0, 450.0), 20.0, 1e-9) &&
+                    Near(f.CandelaAt(0.0, 360.0), 10.0, 1e-9) && Near(f.CandelaAt(0.0, 180.0), 30.0, 1e-9) && Near(f.CandelaAt(90.0, 270.0), 45.0, 1e-9),
+                "IES 0..360: no folding, planes interpolate and angles wrap (315 and -45 give 25, 450 gives 20, 360 gives 10)");
+  const IesProfile sg = ParseIesLm63(kIesFrontSigned);
+  d8test::Check(sg.ok && sg.Layout() == IesProfile::HorizontalLayout::FrontSigned && Near(sg.CandelaAt(0.0, -45.0), 16.0, 1e-9) && Near(sg.CandelaAt(0.0, 45.0), 26.0, 1e-9) && Near(sg.CandelaAt(0.0, -30.0), 17.666666666666668, 1e-9) &&
+                    Near(sg.CandelaAt(0.0, 120.0), 0.0, 0) && Near(sg.CandelaAt(0.0, -100.0), 0.0, 0) && Near(sg.CandelaAt(0.0, 270.0), 11.0, 1e-9) && Near(sg.CandelaAt(-45.0, 45.0), 25.5, 1e-9) && Near(sg.CandelaAt(100.0, 0.0), 0.0, 0),
+                "IES type B -90..90: signed horizontal angles interpolate, nothing is emitted beyond +-90, 270 is -90");
+  std::string asA = kIesFrontSigned;
+  asA.replace(asA.find("1 -1 1 3 3 2 2"), 14, "1 -1 1 3 3 3 2");
+  const IesProfile sgA = ParseIesLm63(asA);
+  d8test::Check(sgA.ok && sgA.photometricType == 3 && Near(sgA.CandelaAt(0.0, -45.0), 16.0, 1e-9) && Near(sgA.CandelaAt(-45.0, 45.0), 25.5, 1e-9), "IES type A -90..90: the same table reads the same numbers");
+  const IesProfile fm = ParseIesLm63(kIesFrontMirrored);
+  d8test::Check(fm.ok && fm.Layout() == IesProfile::HorizontalLayout::FrontMirrored && Near(fm.CandelaAt(0.0, -45.0), 26.0, 1e-9) && Near(fm.CandelaAt(0.0, 45.0), 26.0, 1e-9) && Near(fm.CandelaAt(0.0, -90.0), 31.0, 1e-9) &&
+                    Near(fm.CandelaAt(0.0, -135.0), 0.0, 0) && Near(fm.CandelaAt(0.0, 0.0), 21.0, 1e-9),
+                "IES type A 0..90: negative angles mirror (I(-h) = I(h)) and nothing is emitted beyond +-90");
+  auto refused = [](const char* hdr, const char* vs, const char* hs, const char* body) {
+    std::string t = std::string("IESNA:LM-63-2002\nTILT=NONE\n") + hdr + "\n1 1 100\n" + vs + "\n" + hs + "\n" + body + "\n";
+    return !ParseIesLm63(t).ok && ParseIesLm63(t).error.find("unsupported") != std::string::npos;
+  };
+  d8test::Check(refused("1 -1 1 2 2 1 2 0 0 0", "0 90", "0 270", "1 2\n3 4") && refused("1 -1 1 2 2 1 2 0 0 0", "0 90", "0 45", "1 2\n3 4") && refused("1 -1 1 2 2 1 2 0 0 0", "0 90", "45 90", "1 2\n3 4") &&
+                    refused("1 -1 1 3 2 2 2 0 0 0", "-90 0 90", "0 180", "1 2 3\n4 5 6") && refused("1 -1 1 3 2 2 2 0 0 0", "-90 0 90", "-45 45", "1 2 3\n4 5 6") && refused("1 -1 1 2 2 2 2 0 0 0", "0 90", "0 90", "1 2\n3 4"),
+                "IES: a horizontal range outside the format (type C 0..270, 0..45, 45..90; type B 0..180, -45..45) and a type B vertical range 0..90 are refused with an error");
+  // the two older layouts at angles that are not 45 degrees from a plane (a fold by the wrong constant would pass at 135 and 225)
+  const IesProfile qd = ParseIesLm63(kIesQuadrant);
+  d8test::Check(qd.ok && qd.Layout() == IesProfile::HorizontalLayout::Quadrant && Near(qd.CandelaAt(0.0, 100.0), 100.0 + 200.0 * 80.0 / 90.0, 1e-9) && Near(qd.CandelaAt(0.0, 260.0), 100.0 + 200.0 * 80.0 / 90.0, 1e-9) &&
+                    Near(qd.CandelaAt(0.0, 350.0), 100.0 + 200.0 * 10.0 / 90.0, 1e-9) && Near(qd.CandelaAt(0.0, -100.0), 100.0 + 200.0 * 80.0 / 90.0, 1e-9),
+                "IES 0..90: quadrant folds at 100, 260, 350 and -100 degrees (277.78 and 122.22) with 100 on plane 0 and 300 on plane 90");
+  const IesProfile bi = ParseIesLm63(kIesBilateral);
+  d8test::Check(bi.Layout() == IesProfile::HorizontalLayout::Bilateral0To180 && Near(bi.CandelaAt(90.0, 200.0), 40.0 + 3960.0 * 70.0 / 90.0, 1e-9) && Near(bi.CandelaAt(90.0, 350.0), 400.0 - 360.0 * 10.0 / 90.0, 1e-9),
+                "IES 0..180: bilateral folds 200 to 160 (3120) and 350 to 10 (360) with the multiplier applied");
+  // decoy: the clamping reader gives the first or last plane for h outside the table
+  const double clampAt0 = 100.0;
+  d8test::Check(!Near(clampAt0, b.CandelaAt(0.0, 0.0), 50.0), "IES decoy: a reader that clamps to the nearest tabulated plane (100) is rejected at h = 0");
+}
+
+// D8-ENSCAPE-LIGHT (lumen override): a lumen value replaces the file's rating and every candela value is scaled by the ratio of the new flux to the integrated
+// flux, so the profile then integrates to the new value. Hand values on the uniform 100 cd file (1256.637 lm): overriding to 2513.274 lm doubles every candela
+// (200 cd; relative tolerance 1e-5 for the quadrature of the original flux), to 628.3185 lm halves it (50 cd), to the same flux leaves it; to 1000 lm gives
+// 1000 / (4 pi) = 79.5775 cd; the integrated flux after each override is the target to 1e-12. The cosine file (314.159 lm) overridden to 628.3185 lm doubles the
+// peak candela (200). Refused with no change: a negative target, a not-a-number target, a profile that was not read, a profile whose table is all zero.
+// Decoy: scaling by the target over 1000 (a per-1000-lumen reading of the file) would give 2.513 for 2513.274.
+D8_EXTRA_TEST(Rw5OutscapeIesLumenOverride) {
+  const double pi = 3.14159265358979323846;
+  IesProfile u = ParseIesLm63(kIesUniform);
+  d8test::Check(u.ok && u.ScaleToLumens(8.0 * pi * 100.0) && NearRel(u.CandelaAt(75.0, 0.0), 200.0, 1e-5) && NearRel(u.TotalLumens(), 8.0 * pi * 100.0, 1e-12), "lumen override: 1256.64 lm -> 2513.27 lm doubles every candela and the flux is the target");
+  IesProfile h = ParseIesLm63(kIesUniform);
+  d8test::Check(h.ScaleToLumens(2.0 * pi * 100.0) && NearRel(h.CandelaAt(120.0, 0.0), 50.0, 1e-5) && NearRel(h.TotalLumens(), 2.0 * pi * 100.0, 1e-12), "lumen override: 628.32 lm halves every candela");
+  IesProfile same = ParseIesLm63(kIesUniform);
+  const double flux0 = same.TotalLumens();
+  d8test::Check(same.ScaleToLumens(flux0) && NearRel(same.CandelaAt(10.0, 0.0), 100.0, 1e-12), "lumen override: the same flux leaves the candela alone");
+  IesProfile k = ParseIesLm63(kIesUniform);
+  d8test::Check(k.ScaleToLumens(1000.0) && NearRel(k.CandelaAt(90.0, 0.0), 1000.0 / (4.0 * pi), 1e-5) && NearRel(k.TotalLumens(), 1000.0, 1e-12), "lumen override: 1000 lm is 1000 / (4 pi) = 79.58 cd in every direction");
+  IesProfile l = ParseIesLm63(kIesLambert);
+  const double peak0 = l.CandelaAt(0.0, 0.0);
+  d8test::Check(l.ScaleToLumens(2.0 * pi * 100.0) && NearRel(l.CandelaAt(0.0, 0.0), 2.0 * peak0, 3e-3) && NearRel(l.CandelaAt(60.0, 0.0), 2.0 * 50.0, 3e-3) && NearRel(l.TotalLumens(), 2.0 * pi * 100.0, 1e-12),
+                "lumen override: a 100 cos(v) file overridden to twice its flux doubles the peak (200) and the 60 degree value (100)");
+  IesProfile bad = ParseIesLm63(kIesUniform);
+  const double c0 = bad.CandelaAt(60.0, 0.0);
+  IesProfile zero = ParseIesLm63(kIesUniform);
+  for (double& c : zero.candela) c = 0.0;
+  IesProfile unread = ParseIesLm63("not a photometric file");
+  d8test::Check(!bad.ScaleToLumens(-5.0) && !bad.ScaleToLumens(std::nan("")) && !bad.ScaleToLumens(std::numeric_limits<double>::infinity()) && Near(bad.CandelaAt(60.0, 0.0), c0, 0) && !zero.ScaleToLumens(500.0) && !unread.ScaleToLumens(500.0),
+                "lumen override: a negative, not-a-number or infinite target, an all-zero table and an unread profile are refused without change");
+  d8test::Check(!Near(2.0 * pi * 400.0 / 1000.0, 200.0, 1.0), "lumen override decoy: dividing the target by 1000 does not give the doubled candela");
 }
 
 // D8-ENSCAPE-GLASS (glass reflection and refraction): Snell and Fresnel for n = 1.5. Hand values: normal incidence reflects ((1.5 - 1)/(1.5 + 1))^2 = 0.04;
