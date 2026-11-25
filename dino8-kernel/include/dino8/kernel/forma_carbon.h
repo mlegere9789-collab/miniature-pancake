@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <locale>
 #include <map>
 #include <set>
 #include <sstream>
@@ -180,17 +182,50 @@ struct TargetGap {
 };
 inline TargetGap CompareToTarget(double value, double target) { return {value, target, value - target, value <= target + 1e-12}; }
 
-// Comma-separated report with a header row and one row per group, then the total.
+// A double as the shortest plain decimal text that reads back to the same double: no exponent, no digit grouping, a point as the decimal
+// separator whatever the global locale is (the streams are imbued with the classic locale; no C library formatting is used). Non-finite
+// values are written as nan, inf and -inf.
+inline std::string ShortestDecimal(double v) {
+  if (std::isnan(v)) return "nan";
+  if (std::isinf(v)) return v < 0 ? "-inf" : "inf";
+  if (v == 0) return "0";   // also negative zero
+  std::string last;
+  for (int decimals = 0; decimals <= 340; ++decimals) {
+    std::ostringstream o;
+    o.imbue(std::locale::classic());
+    o << std::fixed << std::setprecision(decimals) << v;
+    last = o.str();
+    std::istringstream in(last);
+    in.imbue(std::locale::classic());
+    double back = 0;
+    in >> back;
+    if (!in.fail() && back == v) break;
+  }
+  return last;
+}
+
+// A CSV field per RFC 4180: quoted when it holds a comma, a double quote or a line break, quotes doubled.
+inline std::string CsvField(const std::string& f) {
+  if (f.find_first_of(",\"\r\n") == std::string::npos) return f;
+  std::string q = "\"";
+  for (char c : f) {
+    if (c == '"') q += '"';
+    q += c;
+  }
+  return q + "\"";
+}
+
+// Comma-separated report with a header row and one row per group, then the total. Numbers are the shortest decimal text that reads back
+// exactly (so a re-import keeps the breakdown-sums-to-total property to the last bit), independent of the host's locale.
 inline std::string CarbonCsv(const std::string& groupTitle, const std::map<std::string, double>& group) {
-  std::ostringstream os;
-  os << groupTitle << ",kgCO2e\n";
+  std::string out = CsvField(groupTitle) + ",kgCO2e\n";
   double total = 0;
   for (const auto& kv : group) {
-    os << kv.first << "," << kv.second << "\n";
+    out += CsvField(kv.first) + "," + ShortestDecimal(kv.second) + "\n";
     total += kv.second;
   }
-  os << "total," << total << "\n";
-  return os.str();
+  out += "total," + ShortestDecimal(total) + "\n";
+  return out;
 }
 
 }  // namespace forma

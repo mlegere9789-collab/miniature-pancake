@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "dino8/kernel/forma_site.h"
 #include "dino8/kernel/forma_solar.h"
 #include "test_registry.h"
 
@@ -160,6 +161,125 @@ D8_EXTRA_TEST(Rw5FormaSunHoursGroundGrid) {
   // samples per hour scale the hours: 4 lit samples at 4 samples per hour are one hour
   const std::vector<SunSample> four = AuthoredSamples({{180, 45}, {180, 45}, {180, 45}, {180, 45}});
   d8test::Check(Near(SunHoursAt({5, 31, 0}, {0, 0, 0}, box, four, 4, 1).totalHours, 1.0, 1e-12), "ground grid: four samples at four per hour are one hour");
+}
+
+// ---- ANALYSIS-0001: a study for a chosen date, run over a ground grid -------------------------------------------------------
+// The chain the row states: a date and a number of samples per hour -> sun positions -> direct sun exposure on a ground sample grid with
+// shadows from a box. Site 52 N, 0 E (UTC), box [0,10] x [0,10] x [0,20], ground grid of 5 m spacing from (-47.3, -43.1) (22 x 22 points; the
+// points inside the footprint are masked out). Oracle, written here: for every slot of the day (slot k of n per hour is centred on
+// (k + 1/2) / n o'clock), the sun from the Almanac formulation (not the NOAA code of the header); a point is lit in a slot when that sun
+// is above the horizon and the closed-form swept footprint of the box (length h / tan el) misses the point. The oracle runs twice, with
+// the shadow made 0.5 m larger and the sun 0.01 degree lower, and with the shadow 0.5 m smaller and the sun 0.01 degree higher. A slot
+// whose two runs agree is decisive: the kernel's verdict for that point and slot (SunLitSamples on the one sample) must be the same. A
+// slot where they differ (a point within 0.5 m of a shadow edge, or a sun within 0.01 degree of the horizon) can fall either way, because
+// the two sun formulations differ by up to 0.007 degree; those slots are only counted and must be below 2 % of all point-slots. The kernel
+// hours of every point must lie between the two oracle totals and, summed over the grid, differ from the middle oracle by less than the
+// number of ambiguous slots.
+//  * 21 June at 4 samples per hour (96 slots) and at 12 per hour (288 slots), 21 December at 4 per hour, a range 20 to 22 June and a range
+//    of twelve dates from 20 March (the day length grows about 0.1 h a day, so each date has to be used);
+//  * an unobstructed point (-300, -300) has the daylight hours of the slots: equal to the oracle count, and within 0.25 h of the sunrise
+//    equation 2 acos(-tan lat tan decl) / 15 (16.49 h in June, 7.51 h in December): one slot at each end can fall either way;
+//  * the hours of a point scale with the samples per hour: 4 and 12 per hour agree within a quarter hour at every point;
+//  * a local-time window at 15 E with UTC+1: local 12 to 13 o'clock at 40 N is 1.0 h (all daylight).
+D8_EXTRA_TEST(Rw5FormaSunStudyOnGroundGrid) {
+  const std::vector<Tri> box = PrismTriangles({{0, 0}, {10, 0}, {10, 10}, {0, 10}}, 0, 20);
+  GroundGrid grid = MakeGroundGrid(-47.3, -43.1, 57.7, 61.9, 5.0);
+  MaskGrid(grid, {{{0, 0}, {10, 0}, {10, 10}, {0, 10}}}, nullptr);
+  d8test::Check(grid.nx == 22 && grid.ny == 22 && grid.ValidCount() == 484 - 4, "study grid: 22 x 22 points of 5 m, the four points inside the footprint are masked");
+  struct Run { int month, day, days, spp; };
+  const Run runs[] = {{6, 21, 1, 4}, {6, 21, 1, 12}, {12, 21, 1, 4}, {6, 20, 3, 4}, {3, 20, 12, 4}};
+  long ambiguousSlots = 0, slotPoints = 0, decisiveWrong = 0, outsideBand = 0;
+  int mismatches = 0, points = 0, openMismatch = 0;
+  double openHours[5] = {0, 0, 0, 0, 0};
+  std::vector<double> june4, june12;
+  for (int ri = 0; ri < 5; ++ri) {
+    const Run& rn = runs[ri];
+    SunStudy st;
+    st.latDeg = 52.0; st.lonDeg = 0.0; st.tzHours = 0.0; st.year = 2026;
+    st.month1 = rn.month; st.day1 = rn.day; st.month2 = rn.month; st.day2 = rn.day + rn.days - 1;
+    st.startHour = 0; st.endHour = 24; st.samplesPerHour = rn.spp;
+    const std::vector<SunSample> samples = SunSamples(st);
+    if (static_cast<int>(samples.size()) != 24 * rn.spp * rn.days) ++mismatches;
+    // the oracle's own sun table: slot k of day d
+    struct Slot { double az, el; };
+    std::vector<Slot> slots;
+    for (int d = 0; d < rn.days; ++d)
+      for (int k = 0; k < 24 * rn.spp; ++k) {
+        const AlmSun a = Almanac(52.0, 0.0, 2026, rn.month, rn.day + d, (k + 0.5) / rn.spp);
+        slots.push_back({a.azDeg, a.elDeg});
+      }
+    auto lit = [&](const Slot& s, double x, double y, double grow, double dEl) {
+      const double el = s.el + dEl;
+      return el > 0 && !ShadowedByBox(x, y, 0, 10, 0, 10, 20, s.az, el, grow);
+    };
+    for (int j = 0; j < grid.ny; ++j)
+      for (int i = 0; i < grid.nx; ++i) {
+        if (!grid.Valid(i, j)) continue;
+        const P2 p = grid.Point(i, j);
+        int sumLo = 0, sumHi = 0;
+        for (size_t k = 0; k < slots.size(); ++k) {
+          const bool lo = lit(slots[k], p.x, p.y, 0.5, -0.01), hi = lit(slots[k], p.x, p.y, -0.5, 0.01);
+          sumLo += lo ? 1 : 0;
+          sumHi += hi ? 1 : 0;
+          ++slotPoints;
+          const bool kernelLit = SunLitSamples({p.x, p.y, 0}, {0, 0, 0}, box, {samples[k]}) > 0;
+          if (lo != hi) ++ambiguousSlots;
+          else if (kernelLit != lo) ++decisiveWrong;
+        }
+        const SunHoursResult r = SunHoursAt({p.x, p.y, 0}, {0, 0, 0}, box, samples, rn.spp, rn.days);
+        const long n = std::lround(r.totalHours * rn.spp);
+        if (n < sumLo || n > sumHi) ++outsideBand;
+        if (!Near(r.hoursPerDay * rn.days, r.totalHours, 1e-9)) ++mismatches;
+        ++points;
+        if (ri == 0) june4.push_back(r.totalHours);
+        if (ri == 1) june12.push_back(r.totalHours);
+      }
+    const SunHoursResult open = SunHoursAt({-300, -300, 0}, {0, 0, 0}, box, samples, rn.spp, rn.days);
+    int openLo = 0, openHi = 0;
+    for (const Slot& s : slots) {
+      openLo += s.el - 0.01 > 0 ? 1 : 0;
+      openHi += s.el + 0.01 > 0 ? 1 : 0;
+    }
+    const long openN = std::lround(open.totalHours * rn.spp);
+    if (openN < openLo || openN > openHi) ++openMismatch;
+    openHours[ri] = open.hoursPerDay;
+    // sunrise equation with the declination of local noon of the middle date (Almanac formulation)
+    const double decl = Almanac(52.0, 0.0, 2026, rn.month, rn.day + rn.days / 2, 12.0).declDeg;
+    const double dayLen = 2.0 * std::acos(-std::tan(52.0 * kPi / 180) * std::tan(decl * kPi / 180)) * 180.0 / kPi / 15.0;
+    if (!Near(open.hoursPerDay, dayLen, 0.25 + 0.02)) ++openMismatch;
+  }
+  d8test::Check(ambiguousSlots * 50 < slotPoints && ambiguousSlots > 0, "study grid: fewer than 2 % of the point-slots are ambiguous (within 0.5 m of a shadow edge or 0.01 degree of the horizon)");
+  d8test::Check(decisiveWrong == 0, "study grid: in every decisive slot of every point the kernel's lit verdict equals the closed-form shadow verdict (June 4 and 12 per hour, December, a three-date range, twelve dates from 20 March)");
+  d8test::Check(points == 5 * 480 && mismatches == 0 && outsideBand == 0, "study grid: the hours of all 2400 point-runs lie between the two oracle totals and the per-day mean times the days is the total");
+  d8test::Check(openMismatch == 0 && Near(openHours[0], 16.5, 0.3) && Near(openHours[2], 7.5, 0.3), "study grid: an unobstructed point gets the daylight hours of the slots, within a quarter hour of the sunrise equation (16.5 h in June, 7.5 h in December)");
+  d8test::Check(!Near(openHours[0], openHours[2], 5.0) && Near(openHours[3], openHours[0], 0.15), "study grid: another date gives other hours (June against December 9 h apart); the per-day mean of 20 to 22 June equals the 21 June value");
+  d8test::Check(Near(openHours[4], 12.33, 0.3) && openHours[4] > 12.15, "study grid: the mean day of 20 to 31 March is about 12.3 h at 52 N (sunrise equation at 26 March: cos H0 = -tan 52 tan 1.9 gives 12.33 h), above the 12.1 h of the first date alone");
+  double worstScale = 0, minShade = 1e9, maxShade = -1;
+  for (size_t i = 0; i < june4.size(); ++i) {
+    worstScale = std::max(worstScale, std::fabs(june4[i] - june12[i]));
+    minShade = std::min(minShade, june4[i]);
+    maxShade = std::max(maxShade, june4[i]);
+  }
+  d8test::Check(worstScale <= 0.25 + 1e-9, "study grid: 4 and 12 samples per hour agree within a quarter hour at every point");
+  d8test::Check(maxShade - minShade > 6.0 && maxShade > 15.0, "study grid decoy: the box shades some points for more than six hours of the day (the grid is not all open ground)");
+  // a different position of the same box gives different results: moving the box 30 m east changes the lit hours of the point (-7.3, 1.9)
+  {
+    SunStudy st;
+    st.latDeg = 52.0; st.year = 2026; st.month1 = st.month2 = 6; st.day1 = st.day2 = 21; st.samplesPerHour = 4;
+    const std::vector<SunSample> samples = SunSamples(st);
+    const std::vector<Tri> moved = PrismTriangles({{30, 0}, {40, 0}, {40, 10}, {30, 10}}, 0, 20);
+    const double a = SunHoursAt({-7.3, 1.9, 0}, {0, 0, 0}, box, samples, 4, 1).totalHours, b = SunHoursAt({-7.3, 1.9, 0}, {0, 0, 0}, moved, samples, 4, 1).totalHours;
+    d8test::Check(a < b - 1.0, "study grid: a point beside the box is shaded for more than an hour by it, and by the box moved 30 m east it is not");
+  }
+  // local time and zone: 15 E, UTC+1, local 12 to 13 at 40 N in June is all daylight and, with the sun high, lit on open ground
+  SunStudy z;
+  z.latDeg = 40.0; z.lonDeg = 15.0; z.tzHours = 1.0; z.year = 2026; z.month1 = z.month2 = 6; z.day1 = z.day2 = 21; z.startHour = 12; z.endHour = 13; z.samplesPerHour = 4;
+  const std::vector<SunSample> zs = SunSamples(z);
+  d8test::Check(zs.size() == 4 && Near(SunHoursAt({0, 0, 0}, {0, 0, 0}, {}, zs, 4, 1).totalHours, 1.0, 1e-12) && zs[0].elevationDeg > 60.0,
+                "study zone: local 12 to 13 at 15 E (UTC+1), 40 N in June gives four samples with the sun above 60 degrees, all lit");
+  z.tzHours = 0.0;   // the same local clock without the zone offset is an hour earlier in solar time: the sun is lower
+  const std::vector<SunSample> zs0 = SunSamples(z);
+  d8test::Check(zs0[0].elevationDeg < zs[0].elevationDeg - 1.0, "study zone decoy: ignoring the time zone moves the sun: the elevation at 12:07 differs by more than a degree");
 }
 
 // ---- ANALYSIS-0002 ---------------------------------------------------------------------------------------------------------

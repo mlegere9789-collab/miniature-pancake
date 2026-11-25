@@ -16,7 +16,11 @@
 //   by material: concrete 147000, rebar 47040 + 1344 + 1008 + 672 - 16800 = 33264, timber 18000 + 4500 + 1500 + 37500 - 22500 = 39000,
 //   glazing 78400 (sum 297664); by system: structure 180264, envelope 117400; by element: e1 147000, e2 33264, e3 39000, e4 78400.
 #include <cmath>
+#include <cstdint>
+#include <iomanip>
+#include <locale>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -99,6 +103,82 @@ D8_EXTRA_TEST(Rw5FormaCarbonBreakdownHotSpots) {
   const std::string csv = CarbonCsv("system", r.bySystem);
   d8test::Check(csv == "system,kgCO2e\nenvelope,117400\nstructure,180264\ntotal,297664\n", "dashboard export: the system breakdown as a CSV table with its total row");
   d8test::Check(!Near(r.byMaterial.at("concrete") / r.total, 0.25, 0.1), "breakdown decoy: concrete share is 49.4 %, far from an equal split (25 %)");
+}
+
+// ---- CARBON-0004: the CSV export --------------------------------------------------------------------------------------------
+// Whole-building carbon is routinely millions of kgCO2e: the export must keep every digit, never use an exponent, never group digits and
+// use a point as the decimal separator whatever locale the host application set.
+// Hand-written expected texts (the dyadic values add exactly: 1234.25 + 3456789 + 12345678.5 = 15803701.75). The shortest text that
+// reads back to the same double: 1234.5678 -> "1234.5678", 0.1 + 0.2 -> "0.30000000000000004" (the well-known 17-digit case), 1e-7 ->
+// "0.0000001", 1e21 -> "1000000000000000000000", 123456789012.345 -> "123456789012.345", negative zero -> "0".
+// A field with a comma or a quote is quoted with doubled quotes (RFC 4180). The numbers survive a round trip bit for bit for 300
+// pseudo-random values of widely different size (a linear congruential generator written here), read back by a classic-locale stream
+// written here. The same output is produced when the global locale has a comma as decimal separator and a dot for digit grouping.
+struct CommaPunct : std::numpunct<char> {
+  char do_decimal_point() const override { return ','; }
+  char do_thousands_sep() const override { return '.'; }
+  std::string do_grouping() const override { return "\3"; }
+};
+struct GlobalLocaleGuard {
+  std::locale saved;
+  explicit GlobalLocaleGuard(const std::locale& l) : saved(std::locale::global(l)) {}
+  ~GlobalLocaleGuard() { std::locale::global(saved); }
+};
+D8_EXTRA_TEST(Rw5FormaCarbonCsvExactDigitsAndLocale) {
+  const std::string expected = "system,kgCO2e\n\"cores, stairs\",1234.25\nenvelope,3456789\nstructure,12345678.5\ntotal,15803701.75\n";
+  const std::map<std::string, double> big = {{"structure", 12345678.5}, {"envelope", 3456789.0}, {"cores, stairs", 1234.25}};
+  d8test::Check(CarbonCsv("system", big) == expected, "csv: values of 1e6 and more keep every digit, no exponent; the total 15803701.75; a field with a comma is quoted");
+  d8test::Check(CarbonCsv("x", {{"a", 1234.5678}}) == "x,kgCO2e\na,1234.5678\ntotal,1234.5678\n", "csv: 1234.5678 is written in full, not rounded to 1234.57");
+  d8test::Check(CarbonCsv("x", {{"a", 0.1 + 0.2}}) == "x,kgCO2e\na,0.30000000000000004\ntotal,0.30000000000000004\n", "csv: 0.1 + 0.2 needs its 17 digits to read back exactly");
+  d8test::Check(CarbonCsv("x", {{"a", 1e-7}}) == "x,kgCO2e\na,0.0000001\ntotal,0.0000001\n" && CarbonCsv("x", {{"a", 1e21}}) == "x,kgCO2e\na,1000000000000000000000\ntotal,1000000000000000000000\n" &&
+                    CarbonCsv("x", {{"a", 123456789012.345}}) == "x,kgCO2e\na,123456789012.345\ntotal,123456789012.345\n" && CarbonCsv("x", {{"a", -0.0}}) == "x,kgCO2e\na,0\ntotal,0\n",
+                "csv: 1e-7, 1e21, 123456789012.345 and negative zero are plain decimals");
+  d8test::Check(CarbonCsv("a \"b\", c", {{"say \"hi\"", 1}}) == "\"a \"\"b\"\", c\",kgCO2e\n\"say \"\"hi\"\"\",1\ntotal,1\n", "csv: quotes inside a field are doubled and the field is quoted (title and group name)");
+  // round trip of 300 values (a = 6364136223846793005 a + 1442695040888963407 mod 2^64; value = (top 52 bits as a fraction) times 10^e, e from -5 to 9)
+  std::uint64_t st = 12345;
+  std::map<std::string, double> many;
+  std::vector<double> sent;
+  for (int i = 0; i < 300; ++i) {
+    st = st * 6364136223846793005ULL + 1442695040888963407ULL;
+    const double frac = static_cast<double>(st >> 12) / 4503599627370496.0;   // 52 bits
+    const int e = static_cast<int>((st >> 4) % 15) - 5;
+    const double v = (0.1 + frac) * std::pow(10.0, e);
+    char key[16];
+    std::snprintf(key, sizeof key, "g%03d", i);
+    many[key] = v;
+    sent.push_back(v);
+  }
+  auto roundTrips = [&](const std::string& csv) {
+    std::istringstream in(csv);
+    in.imbue(std::locale::classic());
+    std::string line;
+    std::getline(in, line);   // header
+    int n = 0;
+    for (; n < 300 && std::getline(in, line); ++n) {
+      const std::string num = line.substr(line.find(',') + 1);
+      if (num.find_first_of("eE.,") != std::string::npos && num.find('.') == std::string::npos) return false;   // no exponent, no comma
+      if (num.find_first_of("eE,") != std::string::npos) return false;
+      std::istringstream ns(num);
+      ns.imbue(std::locale::classic());
+      double back = 0;
+      ns >> back;
+      if (ns.fail() || !(back == sent[n])) return false;   // bit for bit: keys g000 .. g299 sort in the order they were made
+    }
+    return n == 300;
+  };
+  const std::string classicText = CarbonCsv("g", many);
+  d8test::Check(roundTrips(classicText), "csv: 300 pseudo-random values between 1e-5 and 1e9 read back bit for bit, with no exponent and no comma in a number");
+  {
+    GlobalLocaleGuard g(std::locale(std::locale::classic(), new CommaPunct));
+    std::ostringstream probe;   // the host locale really is a comma one now (with the default global locale)
+    probe << std::fixed << std::setprecision(1) << 1234567.5;
+    d8test::Check(probe.str() == "1.234.567,5", "csv locale: the test's global locale writes a fixed 1234567.5 as 1.234.567,5 (so an unimbued stream would break the export)");
+    d8test::Check(CarbonCsv("system", big) == expected && CarbonCsv("g", many) == classicText, "csv locale: with a comma-decimal, dot-grouping global locale the export is byte for byte the same");
+  }
+  // decoy: what the previous default-stream code wrote for these values
+  std::ostringstream oldStyle;
+  oldStyle << 3456789.0 << " " << 1234.5678;
+  d8test::Check(oldStyle.str() == "3.45679e+06 1234.57", "csv decoy: a default stream gives 3.45679e+06 and 1234.57, which is not what the export may write");
 }
 
 // ---- CARBON-0003 -----------------------------------------------------------------------------------------------------------
