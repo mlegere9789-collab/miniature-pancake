@@ -229,6 +229,69 @@ D8_EXTRA_TEST(Rw5FormaGridFactorsPerRegionYear) {
                 "grid factors: adding a region later leaves the UK and PL results unchanged");
 }
 
+// ---- CARBON-0008: regions with local factors, climate and grid data, added over time ---------------------------------------
+// Authored packs (not from any database). Items: 10 m3 concrete and 1000 kg rebar; 50000 kWh a year for 10 years from 2026.
+//  UK: concrete A1A3 250 + A4 20; rebar A1A3 1.2 + A4 0.05; grid (2025, 0.20) (2035, 0.05); temperatures 100 days at 0, 100 at 10, 100 at 20,
+//      65 at 25 C.  embodied 10 x 270 + 1000 x 1.25 = 2700 + 1250 = 3950; operational 50000 x (0.185 + ... + 0.05) = 50000 x 1.175 = 58750;
+//      total 62700; heating degree days at 15.5 C: 100 x 15.5 + 100 x 5.5 = 2100; cooling at 22 C: 65 x 3 = 195.
+//  DE: concrete A1A3 220 + A4 25 (no rebar); grid (2025, 0.35) (2040, 0.10); temperatures 80 days at -2, 120 at 8, 100 at 18, 65 at 28 C.
+//      embodied 10 x 245 = 2450 with rebar missing; operational factors 0.35 - 0.25/15 k, k = 1..10: sum 3.5 - 0.25 x 55 / 15 = 2.58333, so
+//      50000 x 2.58333 = 129166.67; total 131616.67; HDD at 15.5: 80 x 17.5 + 120 x 7.5 = 2300; CDD at 22: 65 x 6 = 390.
+//  NO (added later): concrete A1A3 180 + A4 30; grid (2025, 0.03) flat; 365 days at 4 C. embodied 2100; operational 50000 x 10 x 0.03 =
+//      15000; total 17100; HDD at 15.5: 365 x 11.5 = 4197.5; CDD at 22: 0.
+// The results of UK and DE do not change when NO is added. Invalid packs are refused with exact reasons and leave the library as it was.
+RegionPack MakePack(const char* code, std::vector<EmissionFactor> f, std::vector<std::pair<int, double>> grid, std::vector<std::pair<int, double>> days) {
+  RegionPack p;
+  p.code = code;
+  p.embodied = f;
+  p.gridPerYear = grid;
+  for (const auto& d : days)
+    for (int i = 0; i < d.first; ++i) p.dailyMeanTempC.push_back(d.second);
+  return p;
+}
+D8_EXTRA_TEST(Rw5FormaRegionPacks) {
+  RegionLibrary lib;
+  const std::vector<CarbonItem> items = {{"e1", "structure", "concrete", 10}, {"e2", "structure", "rebar", 1000}};
+  const RegionPack uk = MakePack("UK", {Fac("concrete", "x", "m3", {{"A1A3", 250}, {"A4", 20}}), Fac("rebar", "x", "kg", {{"A1A3", 1.2}, {"A4", 0.05}})}, {{2035, 0.05}, {2025, 0.20}}, {{100, 0}, {100, 10}, {100, 20}, {65, 25}});
+  const RegionPack de = MakePack("DE", {Fac("concrete", "x", "m3", {{"A1A3", 220}, {"A4", 25}})}, {{2025, 0.35}, {2040, 0.10}}, {{80, -2}, {120, 8}, {100, 18}, {65, 28}});
+  d8test::Check(lib.Add(uk).empty() && lib.Add(de).empty() && lib.Regions().size() == 2 && lib.Regions()[0] == "UK" && lib.Regions()[1] == "DE", "regions: UK and DE packs are accepted, in the order added");
+  const RegionalCarbonResult ruk = RegionalCarbon(lib, "UK", items, 50000, 2026, 10), rde = RegionalCarbon(lib, "DE", items, 50000, 2026, 10);
+  d8test::Check(ruk.ok && Near(ruk.embodied, 3950, 1e-9) && Near(ruk.operational, 58750, 1e-6) && Near(ruk.total, 62700, 1e-6) && ruk.missing.empty(), "regions: UK local factors and grid table give 3950 + 58750 = 62700 kgCO2e");
+  d8test::Check(rde.ok && Near(rde.embodied, 2450, 1e-9) && Near(rde.operational, 129166.6666666667, 1e-5) && Near(rde.total, 131616.6666666667, 1e-5) && rde.missing.size() == 1 && rde.missing[0] == "rebar",
+                "regions: DE has its own factors (concrete 245, rebar reported missing) and grid table: 2450 + 129166.67 = 131616.67 kgCO2e");
+  d8test::Check(Near(lib.DegreeDaysOf("UK", 15.5, true), 2100, 1e-9) && Near(lib.DegreeDaysOf("UK", 22, false), 195, 1e-9) && Near(lib.DegreeDaysOf("DE", 15.5, true), 2300, 1e-9) && Near(lib.DegreeDaysOf("DE", 22, false), 390, 1e-9) &&
+                    lib.DegreeDaysOf("XX", 15.5, true) == 0,
+                "regions: climate gives heating degree days 2100 (UK) and 2300 (DE) at 15.5 C and cooling degree days 195 and 390 at 22 C; an unknown region has none");
+  // the region of the factor decides: the UK rebar factor is not found in DE, and the climate of one region is not the other's
+  d8test::Check(lib.Factors().Find("rebar", "UK") != nullptr && lib.Factors().Find("rebar", "DE") == nullptr && lib.Factors().Find("concrete", "DE")->perUnit.at("A1A3") == 220 && lib.Factors().Find("concrete", "UK")->region == "UK",
+                "regions: factors are kept per region (the UK rebar is not visible in DE, the pack's own region code is stored)");
+  // adding a region later changes nothing for the others
+  const RegionPack no = MakePack("NO", {Fac("concrete", "x", "m3", {{"A1A3", 180}, {"A4", 30}})}, {{2025, 0.03}}, {{365, 4}});
+  d8test::Check(lib.Add(no).empty() && lib.Regions().size() == 3, "regions: NO is added later");
+  const RegionalCarbonResult rno = RegionalCarbon(lib, "NO", items, 50000, 2026, 10), uk2 = RegionalCarbon(lib, "UK", items, 50000, 2026, 10), de2 = RegionalCarbon(lib, "DE", items, 50000, 2026, 10);
+  d8test::Check(rno.ok && Near(rno.embodied, 2100, 1e-9) && Near(rno.operational, 15000, 1e-9) && Near(rno.total, 17100, 1e-9) && Near(lib.DegreeDaysOf("NO", 15.5, true), 4197.5, 1e-9) && lib.DegreeDaysOf("NO", 22, false) == 0,
+                "regions: NO gives 2100 + 15000 = 17100 kgCO2e, 4197.5 heating degree days and no cooling");
+  d8test::Check(uk2.total == ruk.total && uk2.embodied == ruk.embodied && uk2.operational == ruk.operational && de2.total == rde.total && de2.operational == rde.operational && lib.DegreeDaysOf("UK", 15.5, true) == 2100,
+                "regions: the UK and DE results are bit for bit the same after NO was added");
+  d8test::Check(!RegionalCarbon(lib, "FR", items, 50000, 2026, 10).ok, "regions: an unknown region gives no result");
+  // schema errors, exact
+  RegionPack bad;
+  bad.dailyMeanTempC.assign(364, 10.0);
+  const std::vector<std::string> e1 = lib.Add(bad);
+  d8test::Check(e1.size() == 4 && e1[0] == "code: empty" && e1[1] == "embodied: no factors" && e1[2] == "grid: no table" && e1[3] == "climate: 364 daily values, need 365 or 366", "regions schema: an empty pack is refused with its four reasons, in order");
+  RegionPack bad2 = MakePack("FR", {Fac("", "x", "", {})}, {{2030, 0.1}, {2030, -0.1}}, {{365, 10}});
+  bad2.dailyMeanTempC[2] = 70.0;
+  const std::vector<std::string> e2 = lib.Add(bad2);
+  d8test::Check(e2.size() == 6 && e2[0] == "embodied[0]: empty material" && e2[1] == "embodied[0]: empty unit" && e2[2] == "embodied[0]: no stages" && e2[3] == "grid: year 2030 twice" &&
+                    e2[4] == "grid: year 2030 has a negative or non-finite factor" && e2[5] == "climate: day 3 outside -90 .. 60 C",
+                "regions schema: an empty factor row, a repeated year with a negative factor and a 70 C day are refused with six exact reasons");
+  const std::vector<std::string> e3 = lib.Add(uk);
+  d8test::Check(e3.size() == 1 && e3[0] == "code: region UK already present" && lib.Regions().size() == 3 && !lib.Has("FR"), "regions schema: adding UK a second time is refused and nothing changes");
+  RegionPack ok366 = MakePack("SE", {Fac("concrete", "x", "m3", {{"A1A3", 200}})}, {{2025, 0.04}}, {{366, 3}});
+  d8test::Check(lib.Add(ok366).empty() && Near(lib.DegreeDaysOf("SE", 15.5, true), 366 * 12.5, 1e-9), "regions schema: a leap-year climate of 366 days is accepted (366 x 12.5 = 4575 heating degree days)");
+  d8test::Check(!Near(rde.operational, 50000 * 10 * 0.35, 1.0) && !Near(rde.embodied, ruk.embodied, 1.0), "regions decoy: the DE result is not the UK embodied value and not a flat 2025 grid factor");
+}
+
 // ---- CARBON-0001 -----------------------------------------------------------------------------------------------------------
 // Whole-life: embodied 297664 (the items above) + operational 117500 (UK, 10 years) = 415164 kgCO2e; floor area 2500 m2: 119.0656, 47.0
 // and 166.0656 kgCO2e per m2. A zero floor area gives zero per-area values instead of dividing.

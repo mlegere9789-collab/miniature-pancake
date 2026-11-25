@@ -92,17 +92,28 @@ std::vector<SunSample> AuthoredSamples(const std::vector<std::pair<double, doubl
 // ---- ANALYSIS-0001 ---------------------------------------------------------------------------------------------------------
 // The NOAA position agrees with two independent references, and sun hours on a ground grid behind a box follow the closed-form shadow.
 //
-// Position: the SPA sample (published zenith 50.1116, azimuth 194.340; that value includes atmospheric refraction, about 0.016 degree
-// at 40 degrees elevation, and NOAA states about 0.01 degree for its equations, so the tolerance is 0.03 degree) and twelve instants
-// against the Almanac formulation (each method about 0.01 degree, tolerance 0.03 degree on elevation, 0.05 on azimuth).
+// Position: the SPA sample (2003-10-17 12:30:30 at UTC-7, 39.742476 N, 105.1786 W, 1830.14 m, 820 mbar, 11 C). The published
+// intermediate values of the report: topocentric elevation before refraction e0 = 39.872046 degrees (zenith 50.127954), refraction
+// 0.016332 degree, refracted elevation 39.888378 (zenith 50.111622), azimuth 194.340241 (eastward from north). The NOAA equations are
+// accurate to a few thousandths of a degree (measured here: azimuth 0.0023 degree off, the elevation off by 3e-5 degree by partial
+// cancellation of a 0.0019 degree geocentric error and the 0.0019 degree parallax the SPA applies), so the tolerance is 0.005 degree;
+// the 0.0005 degree of the row's sketch needs the full SPA (periodic terms, nutation, parallax) which is NOT implemented, so that
+// level is neither met nor claimed here. The refraction formula is checked against the published 0.016332 to 1e-6, then the refracted
+// zenith against 50.111622 to 0.005. Twelve more instants are checked against the Almanac formulation (each method about 0.01
+// degree: tolerance 0.02 degree, measured worst 0.007).
 // Ground grid: a box [0,10] x [0,10] x [0,20] on flat ground, 13 authored sun directions (azimuth 60 to 300 step 20, elevation
 // alternating 25 and 55 degrees: shadow lengths 42.89 and 14.00 m), 19 x 19 grid points 5 m apart from (-39.7, -41.3). A point has
 // as many lit samples as directions whose swept footprint (length h / tan(el)) misses it.
 D8_EXTRA_TEST(Rw5FormaSunHoursGroundGrid) {
   const SunPos spa = SunPosition(39.742476, -105.1786, 2003, 10, 17, 12.0 + 30.0 / 60 + 30.0 / 3600 + 7.0);
-  d8test::Check(Near(90.0 - spa.elevationDeg, 50.1116, 0.03) && Near(spa.azimuthDeg, 194.340, 0.03),
-                "sun position: the NREL SPA sample (zenith 50.1116, azimuth 194.340) within 0.03 degree");
-  d8test::Check(!Near(90.0 - spa.elevationDeg, 50.1116, 0.001), "sun position: the geometric NOAA zenith is not the refracted SPA value to the digit (a copied constant would be)");
+  d8test::Check(Near(90.0 - spa.elevationDeg, 50.127954, 0.005) && Near(spa.azimuthDeg, 194.340241, 0.005),
+                "sun position: the NREL SPA sample, unrefracted zenith 50.127954 and azimuth 194.340241, within 0.005 degree");
+  d8test::Check(Near(RefractionDeg(39.872046, 820.0, 11.0), 0.016332, 1e-6) && Near(RefractionDeg(90.0), 1.02 / (60.0 * std::tan((90.0 + 10.3 / 95.11) * kPi / 180.0)), 1e-12) && RefractionDeg(-1.0) == 0.0,
+                "refraction: the SPA sample value 0.016332 degree at 39.872046 degrees, 820 mbar, 11 C (1e-6); zero below the apparent horizon");
+  d8test::Check(Near(90.0 - (spa.elevationDeg + RefractionDeg(spa.elevationDeg, 820.0, 11.0)), 50.111622, 0.005),
+                "sun position: the refracted zenith at the SPA sample instant is 50.111622 within 0.005 degree");
+  d8test::Check(!Near(spa.azimuthDeg, 14.340241, 1.0) && !Near(90.0 - spa.elevationDeg, spa.elevationDeg, 1.0),
+                "sun position decoy: the azimuth is measured eastward from north (194.34), not westward from south (14.34), and the zenith is not the elevation");
   struct Inst { double lat, lon; int y, m, d; double h; };
   const Inst insts[] = {{51.5, -0.1, 2026, 6, 21, 7.0},   {-33.9, 151.2, 2026, 12, 21, 2.0}, {40.0, -105.0, 2026, 3, 20, 18.5},
                         {10.0, 20.0, 2025, 9, 22, 12.0},  {60.0, 10.0, 2026, 12, 21, 10.0},  {35.0, 139.0, 2027, 7, 4, 3.5},

@@ -426,6 +426,173 @@ inline std::vector<P2> IntersectionOutline(double w1, double w2, double L, doubl
   return o;
 }
 
+// ------------------------------------------------------------------------------------------------------------------------------
+// Intersections from approach streets: any number of legs at any angles, widths per leg, curb returns tangent to the kerb lines of
+// neighbouring legs, and conflict areas where the carriageways of two legs overlap near the node.
+// ------------------------------------------------------------------------------------------------------------------------------
+struct ApproachLeg {
+  double bearingDeg = 0;   // direction of the leg's centreline away from the node, degrees counter-clockwise from +x (east)
+  double width = 0;        // carriageway, kerb to kerb
+  double length = 0;       // from the node centre to the end of the leg
+};
+// A leg from a node towards another point of the street's centreline.
+inline ApproachLeg LegToward(P2 node, P2 toward, double width) {
+  ApproachLeg l;
+  l.bearingDeg = Deg(std::atan2(toward.y - node.y, toward.x - node.x));
+  if (l.bearingDeg < 0) l.bearingDeg += 360.0;
+  l.width = width;
+  l.length = std::hypot(toward.x - node.x, toward.y - node.y);
+  return l;
+}
+
+struct CurbReturn {
+  int legA = -1, legB = -1;   // indices in the order given to BuildIntersection; B is the next leg counter-clockwise from A
+  double wedgeDeg = 0;        // angle between the two kerb lines on the free (non-road) side
+  bool rounded = false;       // false: a sharp corner (radius 0, or a wedge of 180 degrees or more)
+  P2 corner;                  // intersection of the two kerb lines
+  P2 centre, tangentA, tangentB;
+  double radius = 0, tangentLength = 0;
+};
+struct ConflictArea {
+  int legA = -1, legB = -1;
+  std::vector<P2> polygon;
+  double area = 0;
+};
+struct IntersectionGeometry {
+  bool ok = false;
+  std::string error;
+  std::vector<P2> outline;                // counter-clockwise, curb returns approximated by chords
+  std::vector<CurbReturn> returns;        // one per gap between neighbouring legs
+  std::vector<ConflictArea> conflicts;    // every pair of legs whose half-carriageways overlap
+  std::vector<int> order;                 // leg indices by increasing bearing
+};
+
+// Intersection of the convex polygon `subject` with the convex counter-clockwise polygon `clip` (Sutherland-Hodgman).
+inline std::vector<P2> ClipConvex(std::vector<P2> subject, const std::vector<P2>& clip) {
+  for (size_t i = 0; i < clip.size() && !subject.empty(); ++i) {
+    const P2 a = clip[i], b = clip[(i + 1) % clip.size()];
+    auto side = [&](P2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); };
+    std::vector<P2> out;
+    for (size_t k = 0; k < subject.size(); ++k) {
+      const P2 p = subject[k], q = subject[(k + 1) % subject.size()];
+      const double sp = side(p), sq = side(q);
+      if (sp >= 0) out.push_back(p);
+      if ((sp > 0 && sq < 0) || (sp < 0 && sq > 0)) {
+        const double t = sp / (sp - sq);
+        out.push_back({p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)});
+      }
+    }
+    subject = out;
+  }
+  return subject;
+}
+
+// The half-carriageway of a leg: from the node centre to its end, kerb to kerb.
+inline std::vector<P2> LegStrip(const ApproachLeg& l) {
+  const double a = Rad(l.bearingDeg), ux = std::cos(a), uy = std::sin(a), nx = -uy, ny = ux, h = l.width / 2;
+  return {{-h * nx, -h * ny}, {l.length * ux - h * nx, l.length * uy - h * ny}, {l.length * ux + h * nx, l.length * uy + h * ny}, {h * nx, h * ny}};
+}
+
+inline IntersectionGeometry BuildIntersection(const std::vector<ApproachLeg>& legs, double radius, int arcSegments) {
+  IntersectionGeometry g;
+  const int n = static_cast<int>(legs.size());
+  auto fail = [&](const std::string& why) {
+    g.ok = false;
+    g.error = why;
+    g.outline.clear();
+    g.returns.clear();
+    g.conflicts.clear();
+    return g;
+  };
+  if (n < 2) return fail("an intersection needs at least two approach legs");
+  if (arcSegments < 1) return fail("arcSegments must be at least 1");
+  std::vector<double> bearing(n);
+  for (int i = 0; i < n; ++i) {
+    if (!(legs[i].width > 0) || !(legs[i].length > 0)) return fail("every leg needs a positive width and length");
+    bearing[i] = std::fmod(std::fmod(legs[i].bearingDeg, 360.0) + 360.0, 360.0);
+  }
+  g.order.resize(n);
+  for (int i = 0; i < n; ++i) g.order[i] = i;
+  std::sort(g.order.begin(), g.order.end(), [&](int a, int b) { return bearing[a] < bearing[b]; });
+  for (int k = 0; k < n; ++k) {
+    const int a = g.order[k], b = g.order[(k + 1) % n];
+    if (a != b && std::fabs(std::fmod(bearing[b] - bearing[a] + 360.0, 360.0)) < 1e-6) return fail("two legs have the same bearing");
+  }
+  for (int k = 0; k < n; ++k) {
+    const int ia = g.order[k], ib = g.order[(k + 1) % n];
+    const ApproachLeg &A = legs[ia], &B = legs[ib];
+    const double ra = Rad(bearing[ia]), rb = Rad(bearing[ib]);
+    const V3 uA{std::cos(ra), std::sin(ra), 0}, uB{std::cos(rb), std::sin(rb), 0};
+    const V3 nA{-uA.y, uA.x, 0}, nB{-uB.y, uB.x, 0};
+    double gap = std::fmod(bearing[ib] - bearing[ia] + 360.0, 360.0);
+    if (gap == 0) gap = 360.0;
+    CurbReturn cr;
+    cr.legA = ia;
+    cr.legB = ib;
+    cr.wedgeDeg = gap;
+    // kerb lines: left kerb of A (A.width/2 along nA) and right kerb of B (-B.width/2 along nB)
+    const V3 rhs = nB * (-B.width / 2) - nA * (A.width / 2);
+    const double c = uA.x * uB.y - uA.y * uB.x;
+    if (std::fabs(c) < 1e-9) {
+      if (std::fabs(A.width - B.width) > 1e-9) return fail("opposite legs of different width cannot share a kerb line");
+      cr.rounded = false;
+      cr.corner = {0, 0};
+      g.returns.push_back(cr);
+      continue;
+    }
+    const double sC = (rhs.x * uB.y - rhs.y * uB.x) / c;
+    const V3 C = nA * (A.width / 2) + uA * sC;
+    cr.corner = {C.x, C.y};
+    const double tC = Dot(C, uB);
+    if (gap < 180.0 && radius > 0) {
+      const double th = Rad(gap), t = radius / std::tan(th / 2);
+      if (sC + t > A.length + 1e-9 || tC + t > B.length + 1e-9) return fail("the curb return does not fit on the legs (radius too large for their length)");
+      cr.rounded = true;
+      cr.radius = radius;
+      cr.tangentLength = t;
+      cr.tangentA = {C.x + t * uA.x, C.y + t * uA.y};
+      cr.tangentB = {C.x + t * uB.x, C.y + t * uB.y};
+      V3 bis{uA.x + uB.x, uA.y + uB.y, 0};
+      bis = bis * (1.0 / Len(bis));
+      const double d = radius / std::sin(th / 2);
+      cr.centre = {C.x + d * bis.x, C.y + d * bis.y};
+    } else {
+      if (sC > A.length + 1e-9 || tC > B.length + 1e-9) return fail("the kerb lines meet beyond the end of a leg");
+      cr.rounded = false;
+    }
+    g.returns.push_back(cr);
+  }
+  for (int k = 0; k < n; ++k) {
+    const ApproachLeg& A = legs[g.order[k]];
+    const double ra = Rad(bearing[g.order[k]]);
+    const V3 uA{std::cos(ra), std::sin(ra), 0}, nA{-uA.y, uA.x, 0};
+    g.outline.push_back({A.length * uA.x - A.width / 2 * nA.x, A.length * uA.y - A.width / 2 * nA.y});
+    g.outline.push_back({A.length * uA.x + A.width / 2 * nA.x, A.length * uA.y + A.width / 2 * nA.y});
+    const CurbReturn& cr = g.returns[k];
+    if (cr.rounded) {
+      const double a0 = std::atan2(cr.tangentA.y - cr.centre.y, cr.tangentA.x - cr.centre.x);
+      const double sweep = -(kPi - Rad(cr.wedgeDeg));   // clockwise round the centre
+      for (int m = 0; m <= arcSegments; ++m) {
+        const double a = a0 + sweep * m / arcSegments;
+        g.outline.push_back({cr.centre.x + cr.radius * std::cos(a), cr.centre.y + cr.radius * std::sin(a)});
+      }
+    } else if (std::fabs(std::sin(Rad(cr.wedgeDeg))) > 1e-9) {
+      g.outline.push_back(cr.corner);
+    }
+  }
+  for (int i = 0; i < n; ++i)
+    for (int j = i + 1; j < n; ++j) {
+      ConflictArea ca;
+      ca.legA = i;
+      ca.legB = j;
+      ca.polygon = ClipConvex(LegStrip(legs[i]), LegStrip(legs[j]));
+      ca.area = ca.polygon.size() >= 3 ? PolyArea(ca.polygon) : 0.0;
+      if (ca.area > 1e-12) g.conflicts.push_back(ca);
+    }
+  g.ok = true;
+  return g;
+}
+
 }  // namespace forma
 }  // namespace kernel
 }  // namespace dino8

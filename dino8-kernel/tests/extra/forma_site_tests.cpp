@@ -349,4 +349,167 @@ D8_EXTRA_TEST(Rw5FormaIntersectionCurbReturns) {
   d8test::Check(Near(PolyArea(IntersectionOutline(w1, w2, L, M, 3, 64)) - 2060.0, 4 * 9 * (1 - kPi / 4), 0.01), "curb return: a 3 m radius adds a quarter of the 6 m radius area (7.73 m2 over all four)");
 }
 
+// ---- STREET-0002: intersections from approach streets, curb returns and conflict areas -------------------------------------
+// Approach legs (bearing counter-clockwise from east, kerb-to-kerb width, length from the node centre), any number, any angle, given in any
+// order. Corner between neighbouring legs with the free wedge angle theta: the fillet of radius r is tangent to both kerb lines at the
+// distance r / tan(theta / 2) from their meeting point, its centre on the bisector at r / sin(theta / 2). It adds the kite r t minus the
+// sector (r^2 / 2)(pi - theta) = r^2 / tan(theta / 2) - (r^2 / 2)(pi - theta) to the road; a chord polygon of n chords adds n circular
+// segments (r^2 / 2)(phi - sin phi), phi = (pi - theta) / n, on top (the polygon road area is the exact one plus that).
+//  * four legs 90 degrees apart, widths 14 / 10, lengths 50 / 40, r = 6 (given in the order N, E, W, S): strips 2 x 50 x 14 + 2 x 40 x 10
+//    - 14 x 10 = 2060; four returns of 90 degrees: 4 x 7.72567 = 30.90266; chords (n = 64): 0.011354; total 2090.9140;
+//  * a T: west and east legs 10 wide, north leg 8 wide, lengths 40, 40, 30, r = 6: 800 + 8 (30 - 5) = 1000, two returns 15.45133, chords
+//    0.005677: 1015.4570; the straight side between west and east has no vertex;
+//  * a skewed crossing, legs at 0, 60, 180, 240 degrees, widths 12 / 8 / 12 / 8, length 50, r = 5: two strips overlap in a parallelogram
+//    of area 12 x 8 / sin 60 = 110.8513: 2 x 100 x 12 ... union 2000 - 110.8513 = 1889.1487; returns: two of 60 degrees (25 (cot 30 -
+//    2 pi / 6) = 17.1213 each) and two of 120 degrees (25 (cot 60 - pi / 6) = 1.34378 each): 36.9302; chords 0.010513: 1926.0895.
+// Tangency at every return: the tangent points are on the kerb lines (offset w/2 from the leg axis), the radii to them are perpendicular to
+// the kerb direction and of length r, the tangent lengths from the corner are equal and r / tan(theta / 2), and every arc vertex of the
+// outline is at distance r from the centre.
+// Conflict areas: the overlaps of the half-carriageways (centre to leg end) of two legs. Perpendicular legs of widths a and b overlap in a
+// b / 4: the cross has four such pairs of 35 m2 = 140 = 14 x 10 and no overlap between opposite legs; in the skewed crossing the four
+// pairs partition the parallelogram: their sum is 110.8513, the two acute pairs equal each other and the two obtuse pairs equal each
+// other, each checked against a 1 cm grid count made here (within 0.3 %).
+bool InHalfStrip(double x, double y, double bearingDeg, double w, double len) {
+  const double a = bearingDeg * kPi / 180, ux = std::cos(a), uy = std::sin(a);
+  const double along = x * ux + y * uy, across = -x * uy + y * ux;
+  return along >= 0 && along <= len && std::fabs(across) <= w / 2;
+}
+double ChordExtra(double r, double thetaRad, int n) {
+  const double phi = (kPi - thetaRad) / n;
+  return n * (r * r / 2) * (phi - std::sin(phi));
+}
+double FilletArea(double r, double thetaRad) { return r * r / std::tan(thetaRad / 2) - (r * r / 2) * (kPi - thetaRad); }
+D8_EXTRA_TEST(Rw5FormaIntersectionApproachLegs) {
+  const int n = 64;
+  // the cross, legs in the order N, E, W, S
+  const std::vector<ApproachLeg> cross = {{90, 10, 40}, {0, 14, 50}, {180, 14, 50}, {270, 10, 40}};
+  const IntersectionGeometry gc = BuildIntersection(cross, 6, n);
+  const double crossExpect = 2060.0 + 4 * FilletArea(6, kPi / 2) + 4 * ChordExtra(6, kPi / 2, n);
+  d8test::Check(gc.ok && Near(2060.0 + 4 * FilletArea(6, kPi / 2), 2090.9027, 1e-4) && Near(crossExpect, 2090.9140, 1e-4) && Near(PolyArea(gc.outline), crossExpect, 1e-8) && PolygonArea2(gc.outline) > 0,
+                "intersection: four legs in the order N, E, W, S, widths 14 / 10, r = 6: area 2090.9140 m2 (strips 2060 + returns 30.9027 + chords 0.0114), counter-clockwise");
+  d8test::Check(gc.order.size() == 4 && gc.order[0] == 1 && gc.order[1] == 0 && gc.order[2] == 2 && gc.order[3] == 3 && gc.returns.size() == 4 && gc.outline.size() == 4 * (2 + n + 1),
+                "intersection: the legs are ordered by bearing (E, N, W, S) and the outline has 2 end points and 65 arc points per corner");
+  // equal to the symmetric builder of the earlier test
+  d8test::Check(Near(PolyArea(gc.outline), PolyArea(IntersectionOutline(14, 10, 50, 40, 6, n)), 1e-8), "intersection: the general builder gives the symmetric cross of the earlier closed form");
+  // tangency at every return of the cross, the T and the skewed crossing
+  const std::vector<ApproachLeg> tj = {{180, 10, 40}, {0, 10, 40}, {90, 8, 30}};
+  const std::vector<ApproachLeg> skew = {{0, 12, 50}, {60, 8, 50}, {180, 12, 50}, {240, 8, 50}};
+  int tangencyBad = 0, arcBad = 0;
+  for (const auto* legsPtr : {&cross, &tj, &skew}) {
+    const auto& legs = *legsPtr;
+    const IntersectionGeometry g = BuildIntersection(legs, legs.size() == 4 && legs[0].bearingDeg == 90 ? 6.0 : (legs.size() == 3 ? 6.0 : 5.0), n);
+    for (const CurbReturn& r : g.returns) {
+      if (!r.rounded) continue;
+      const ApproachLeg &A = legs[r.legA], &B = legs[r.legB];
+      const double ra = A.bearingDeg * kPi / 180, rb = B.bearingDeg * kPi / 180;
+      const double uax = std::cos(ra), uay = std::sin(ra), ubx = std::cos(rb), uby = std::sin(rb);
+      const double th = r.wedgeDeg * kPi / 180;
+      // tangent point A on the left kerb of A: offset +w/2 from its axis; B on the right kerb of B: offset -w/2
+      if (!Near(-r.tangentA.x * uay + r.tangentA.y * uax, A.width / 2, 1e-9) || !Near(-r.tangentB.x * uby + r.tangentB.y * ubx, -B.width / 2, 1e-9)) ++tangencyBad;
+      // radius to the tangent points: length r and perpendicular to the kerb direction
+      const double dax = r.tangentA.x - r.centre.x, day = r.tangentA.y - r.centre.y, dbx = r.tangentB.x - r.centre.x, dby = r.tangentB.y - r.centre.y;
+      if (!Near(std::hypot(dax, day), r.radius, 1e-9) || !Near(std::hypot(dbx, dby), r.radius, 1e-9) || !Near(dax * uax + day * uay, 0, 1e-9) || !Near(dbx * ubx + dby * uby, 0, 1e-9)) ++tangencyBad;
+      // tangent lengths from the kerb corner
+      const double ta = std::hypot(r.tangentA.x - r.corner.x, r.tangentA.y - r.corner.y), tb = std::hypot(r.tangentB.x - r.corner.x, r.tangentB.y - r.corner.y);
+      if (!Near(ta, r.radius / std::tan(th / 2), 1e-9) || !Near(tb, ta, 1e-9)) ++tangencyBad;
+    }
+    // the arc starts and ends exactly at the tangent points: both are vertices of the outline
+    for (const CurbReturn& r : g.returns) {
+      if (!r.rounded) continue;
+      bool hasA = false, hasB = false;
+      for (const P2& v : g.outline) {
+        hasA = hasA || std::hypot(v.x - r.tangentA.x, v.y - r.tangentA.y) < 1e-9;
+        hasB = hasB || std::hypot(v.x - r.tangentB.x, v.y - r.tangentB.y) < 1e-9;
+      }
+      if (!hasA || !hasB) ++tangencyBad;
+    }
+    // every outline vertex is on a kerb line, an end line, or on the circle of some return
+    for (const P2& v : g.outline) {
+      bool onCircle = false;
+      for (const CurbReturn& r : g.returns)
+        if (r.rounded && Near(std::hypot(v.x - r.centre.x, v.y - r.centre.y), r.radius, 1e-9)) onCircle = true;
+      bool onKerbOrEnd = false;
+      for (const ApproachLeg& l : legs) {
+        const double a = l.bearingDeg * kPi / 180, across = -v.x * std::sin(a) + v.y * std::cos(a), along = v.x * std::cos(a) + v.y * std::sin(a);
+        if (Near(std::fabs(across), l.width / 2, 1e-9) || Near(along, l.length, 1e-9)) onKerbOrEnd = true;
+      }
+      if (!onCircle && !onKerbOrEnd) ++arcBad;
+    }
+  }
+  d8test::Check(tangencyBad == 0, "intersection: at all returns of the cross, the T and the skewed crossing the tangent points are on the kerb lines, the radii are r and perpendicular to the kerbs, the tangent lengths are r / tan(theta/2)");
+  d8test::Check(arcBad == 0, "intersection: every outline vertex is on a kerb line, on a leg end or on the circle of a return");
+  // the T
+  const IntersectionGeometry gt = BuildIntersection(tj, 6, n);
+  const double tExpect = 1000.0 + 2 * FilletArea(6, kPi / 2) + 2 * ChordExtra(6, kPi / 2, n);
+  int sharp = 0;
+  for (const CurbReturn& r : gt.returns) sharp += r.rounded ? 0 : 1;
+  d8test::Check(gt.ok && Near(tExpect, 1015.4570, 1e-4) && Near(PolyArea(gt.outline), tExpect, 1e-8) && gt.returns.size() == 3 && sharp == 1 && gt.outline.size() == 3 * 2 + 2 * (n + 1),
+                "intersection: a T of 10 m through street and an 8 m side street: 1000 + 15.4513 + 0.0057 = 1015.4570 m2, the straight side has no return and no vertex");
+  // the skewed crossing
+  const IntersectionGeometry gs = BuildIntersection(skew, 5, n);
+  const double para = 12.0 * 8.0 / std::sin(kPi / 3);
+  const double sExpect = 2000.0 - para + 2 * FilletArea(5, kPi / 3) + 2 * FilletArea(5, 2 * kPi / 3) + 2 * ChordExtra(5, kPi / 3, n) + 2 * ChordExtra(5, 2 * kPi / 3, n);
+  d8test::Check(gs.ok && Near(para, 110.8513, 1e-4) && Near(sExpect, 1926.0895, 1e-4) && Near(PolyArea(gs.outline), sExpect, 1e-8) && Near(gs.returns[0].wedgeDeg, 60, 1e-9) && Near(gs.returns[1].wedgeDeg, 120, 1e-9),
+                "intersection: a crossing at 60 degrees, widths 12 and 8, r = 5: 1889.1487 + 36.9302 + 0.0105 = 1926.0895 m2, wedges 60 and 120 degrees");
+  // sharp corners: radius 0
+  d8test::Check(Near(PolyArea(BuildIntersection(cross, 0, n).outline), 2060.0, 1e-9) && Near(PolyArea(BuildIntersection(tj, 0, n).outline), 1000.0, 1e-9) && Near(PolyArea(BuildIntersection(skew, 0, n).outline), 2000.0 - para, 1e-9),
+                "intersection: radius 0 gives the plain unions of the strips: 2060, 1000 and 1889.1487 m2");
+  // a bend of two legs 90 degrees apart: widths 10 (east) and 8 (north), lengths 30. The outer (reflex) corner is a sharp kerb corner at
+  // (-4, -5), so the road is two rectangles: [-4, 30] x [-5, 5] = 340 and [-4, 4] x [5, 30] = 200, 540 m2, and the inner corner gets one
+  // return of r = 6 (90 degrees): 7.72567 + 0.00284 chords = 547.7285
+  const IntersectionGeometry gl = BuildIntersection({{0, 10, 30}, {90, 8, 30}}, 6, n);
+  const double lExpect = 34.0 * 10 + 8.0 * 25 + FilletArea(6, kPi / 2) + ChordExtra(6, kPi / 2, n);
+  d8test::Check(gl.ok && Near(PolyArea(gl.outline), lExpect, 1e-8) && Near(lExpect, 547.7285, 1e-4) && gl.returns.size() == 2 && gl.returns[0].rounded != gl.returns[1].rounded,
+                "intersection: a bend of two legs: two rectangles 340 + 200 plus one return = 547.7285 m2, the outer corner is sharp");
+  // errors
+  d8test::Check(!BuildIntersection({{0, 10, 8}, {90, 10, 8}}, 6, n).ok && !BuildIntersection({{0, 10, 40}}, 6, n).ok && !BuildIntersection({{0, 10, 40}, {360, 10, 40}}, 6, n).ok && !BuildIntersection({{0, 10, 40}, {180, 12, 40}}, 6, n).ok &&
+                    !BuildIntersection({{0, 0, 40}, {90, 10, 40}}, 6, n).ok && BuildIntersection({{0, 10, 8}, {90, 10, 8}}, 6, n).error.find("radius too large") != std::string::npos,
+                "intersection: a return too large for short legs, one leg, two legs at the same bearing (0 and 360), opposite legs of different width and a zero width are refused with a reason");
+  const ApproachLeg lt = LegToward({100, 200}, {100, 250}, 10), l2 = LegToward({0, 0}, {-3, -4}, 6);
+  d8test::Check(Near(lt.bearingDeg, 90, 1e-12) && Near(lt.length, 50, 1e-12) && lt.width == 10 && Near(l2.length, 5, 1e-12) && Near(l2.bearingDeg, 180 + std::atan2(4.0, 3.0) * 180 / kPi, 1e-9), "intersection: a leg from a node towards a centreline point has the bearing and length of that segment");
+  d8test::Check(Near(PolyArea(BuildIntersection({{-270, 10, 40}, {360, 14, 50}, {-180, 14, 50}, {-90, 10, 40}}, 6, n).outline), PolyArea(gc.outline), 1e-8),
+                "intersection: bearings are taken modulo 360 (-270, 360, -180, -90 are N, E, W, S)");
+  // conflict areas
+  d8test::Check(gc.conflicts.size() == 4, "conflicts: four pairs of perpendicular legs overlap in the cross, opposite legs do not");
+  double confSum = 0;
+  bool allThirtyFive = true;
+  for (const ConflictArea& c : gc.conflicts) {
+    confSum += c.area;
+    allThirtyFive = allThirtyFive && Near(c.area, 14.0 * 10.0 / 4.0, 1e-9);
+  }
+  d8test::Check(allThirtyFive && Near(confSum, 140.0, 1e-9), "conflicts: each perpendicular pair overlaps in 14 x 10 / 4 = 35 m2, together 140 = 14 x 10");
+  double skewSum = 0;
+  for (const ConflictArea& c : gs.conflicts) skewSum += c.area;
+  d8test::Check(gs.conflicts.size() == 4 && Near(skewSum, para, 1e-9), "conflicts: the four half-carriageway pairs of the skewed crossing add to the parallelogram 12 x 8 / sin 60 = 110.8513 m2");
+  // each pair against a 1 cm grid count written here
+  auto gridArea = [&](const ApproachLeg& a, const ApproachLeg& b) {
+    long cells = 0;
+    const double h = 0.01;
+    for (double y = -12 + h / 2; y < 12; y += h)
+      for (double x = -12 + h / 2; x < 12; x += h)
+        if (InHalfStrip(x, y, a.bearingDeg, a.width, a.length) && InHalfStrip(x, y, b.bearingDeg, b.width, b.length)) ++cells;
+    return cells * h * h;
+  };
+  double worstRel = 0;
+  for (const ConflictArea& c : gs.conflicts) {
+    const double g = gridArea(skew[c.legA], skew[c.legB]);
+    worstRel = std::max(worstRel, std::fabs(g - c.area) / c.area);
+  }
+  d8test::Check(worstRel < 0.003, "conflicts: every pair's overlap agrees with an independent 1 cm grid count within 0.3 %");
+  bool acuteEqual = false, obtuseEqual = false;
+  {
+    double a02 = 0, a31 = 0, a03 = 0, a12 = 0;
+    for (const ConflictArea& c : gs.conflicts) {
+      if (c.legA == 0 && c.legB == 1) a02 = c.area;
+      if (c.legA == 2 && c.legB == 3) a31 = c.area;
+      if (c.legA == 0 && c.legB == 3) a03 = c.area;
+      if (c.legA == 1 && c.legB == 2) a12 = c.area;
+    }
+    acuteEqual = a02 > a03 && Near(a02, a31, 1e-9);
+    obtuseEqual = Near(a03, a12, 1e-9) && a03 > 0;
+  }
+  d8test::Check(acuteEqual && obtuseEqual, "conflicts: the two acute pairs are equal and larger than the two obtuse pairs, which are equal (point symmetry of the crossing)");
+  d8test::Check(!Near(PolyArea(gc.outline), 2060.0, 20.0) && !Near(FilletArea(6, kPi / 2), 6 * 6 * (1 - kPi / 2), 1.0), "intersection decoy: the returns add 31 m2 to the cross, and the fillet area is not the (wrong) formula r^2 (1 - pi/2)");
+}
+
 }  // namespace

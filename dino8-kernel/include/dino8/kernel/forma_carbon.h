@@ -228,6 +228,103 @@ inline std::string CarbonCsv(const std::string& groupTitle, const std::map<std::
   return out;
 }
 
+// ------------------------------------------------------------------------------------------------------------------------------
+// Regions: embodied factors, grid carbon factors and climate per region, added over time
+// ------------------------------------------------------------------------------------------------------------------------------
+struct RegionPack {
+  std::string code;                                   // region code, for example "UK"
+  std::vector<EmissionFactor> embodied;               // local embodied-carbon factors (their region field is overwritten with `code`)
+  std::vector<std::pair<int, double>> gridPerYear;    // grid carbon factor (kgCO2e per kWh) at table years
+  std::vector<double> dailyMeanTempC;                 // climate: the daily mean outdoor temperature of a typical year (365 or 366 values)
+};
+
+// Schema check of a pack. Every error is one line of text; an empty list means the pack is valid.
+inline std::vector<std::string> ValidateRegionPack(const RegionPack& p) {
+  std::vector<std::string> e;
+  if (p.code.empty()) e.push_back("code: empty");
+  if (p.embodied.empty()) e.push_back("embodied: no factors");
+  for (size_t i = 0; i < p.embodied.size(); ++i) {
+    const EmissionFactor& f = p.embodied[i];
+    if (f.material.empty()) e.push_back("embodied[" + std::to_string(i) + "]: empty material");
+    if (f.unit.empty()) e.push_back("embodied[" + std::to_string(i) + "]: empty unit");
+    if (f.perUnit.empty()) e.push_back("embodied[" + std::to_string(i) + "]: no stages");
+    for (const auto& st : f.perUnit)
+      if (!std::isfinite(st.second)) e.push_back("embodied[" + std::to_string(i) + "]: stage " + st.first + " is not a finite number");
+  }
+  if (p.gridPerYear.empty()) e.push_back("grid: no table");
+  std::set<int> years;
+  for (size_t i = 0; i < p.gridPerYear.size(); ++i) {
+    if (!years.insert(p.gridPerYear[i].first).second) e.push_back("grid: year " + std::to_string(p.gridPerYear[i].first) + " twice");
+    if (!(p.gridPerYear[i].second >= 0) || !std::isfinite(p.gridPerYear[i].second)) e.push_back("grid: year " + std::to_string(p.gridPerYear[i].first) + " has a negative or non-finite factor");
+  }
+  if (p.dailyMeanTempC.size() != 365 && p.dailyMeanTempC.size() != 366) e.push_back("climate: " + std::to_string(p.dailyMeanTempC.size()) + " daily values, need 365 or 366");
+  for (size_t i = 0; i < p.dailyMeanTempC.size(); ++i)
+    if (!(p.dailyMeanTempC[i] >= -90.0 && p.dailyMeanTempC[i] <= 60.0)) {
+      e.push_back("climate: day " + std::to_string(i + 1) + " outside -90 .. 60 C");
+      break;
+    }
+  return e;
+}
+
+// Degree days of a daily mean temperature series: heating counts base - T where T is below the base, cooling T - base above it.
+inline double DegreeDays(const std::vector<double>& dailyMeanC, double baseC, bool heating) {
+  double s = 0;
+  for (double t : dailyMeanC) s += heating ? std::max(0.0, baseC - t) : std::max(0.0, t - baseC);
+  return s;
+}
+
+class RegionLibrary {
+ public:
+  // Adds a valid pack and returns an empty list; an invalid pack, or a code that is already present, is refused (nothing changes) and the
+  // reasons are returned.
+  std::vector<std::string> Add(const RegionPack& pack) {
+    std::vector<std::string> err = ValidateRegionPack(pack);
+    if (!pack.code.empty() && Has(pack.code)) err.push_back("code: region " + pack.code + " already present");
+    if (!err.empty()) return err;
+    for (EmissionFactor f : pack.embodied) {
+      f.region = pack.code;
+      factors_.Add(f);
+    }
+    grid_.SetRegion(pack.code, pack.gridPerYear);
+    climate_[pack.code] = pack.dailyMeanTempC;
+    order_.push_back(pack.code);
+    return err;
+  }
+  bool Has(const std::string& region) const { return climate_.count(region) > 0; }
+  const std::vector<std::string>& Regions() const { return order_; }
+  const FactorDb& Factors() const { return factors_; }
+  const GridFactors& Grid() const { return grid_; }
+  double DegreeDaysOf(const std::string& region, double baseC, bool heating) const {
+    const auto it = climate_.find(region);
+    return it == climate_.end() ? 0.0 : DegreeDays(it->second, baseC, heating);
+  }
+
+ private:
+  FactorDb factors_;
+  GridFactors grid_;
+  std::map<std::string, std::vector<double>> climate_;
+  std::vector<std::string> order_;
+};
+
+struct RegionalCarbonResult {
+  bool ok = false;
+  double embodied = 0, operational = 0, total = 0;
+  std::vector<std::string> missing;
+};
+// Embodied carbon with the region's own factors plus operational carbon with its grid table.
+inline RegionalCarbonResult RegionalCarbon(const RegionLibrary& lib, const std::string& region, const std::vector<CarbonItem>& items, double kwhPerYear,
+                                           int startYear, int years) {
+  RegionalCarbonResult r;
+  if (!lib.Has(region)) return r;
+  const CarbonBreakdown b = EmbodiedCarbon(lib.Factors(), region, items);
+  r.ok = true;
+  r.embodied = b.total;
+  r.missing = b.missing;
+  r.operational = OperationalCarbon(lib.Grid(), region, kwhPerYear, startYear, years);
+  r.total = r.embodied + r.operational;
+  return r;
+}
+
 }  // namespace forma
 }  // namespace kernel
 }  // namespace dino8
