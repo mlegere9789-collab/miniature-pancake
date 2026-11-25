@@ -8,6 +8,7 @@
 #include <cmath>
 #include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
